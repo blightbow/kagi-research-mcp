@@ -13,6 +13,18 @@ All tool names vary by profile (see [Profile Options](#profile-options)).
 ### Browser Tools
 - **WebFetchJS** / **web_fetch_js** - Fetch JavaScript-rendered web content with full browser emulation
 
+### Direct Fetch (Desktop profile only)
+- **web_fetch_direct** - Fetch raw content without JavaScript rendering (HTML, JSON, XML, plain text)
+
+### Shared Features
+
+Both fetch tools share these capabilities:
+
+- **MediaWiki fast path** - Wiki URLs (`/wiki/...`) are detected and fetched via the MediaWiki API, bypassing the browser or HTTP entirely. Returns clean markdown with YAML frontmatter including site name and generator metadata.
+- **Section extraction** - Use the `section` parameter with a heading name (or list of names) to extract specific sections. Supports disambiguation for duplicate heading names.
+- **Markdown output with YAML frontmatter** - Returns structured output with title, source URL, and truncation hints. When content is truncated, frontmatter includes a table of contents so the caller can request specific sections.
+- **Whitespace normalization** - Non-breaking spaces, HTML entities (`&nbsp;`), and exotic Unicode whitespace in headings and titles are normalized to plain ASCII spaces for reliable section matching.
+
 ### web_fetch_js Capabilities
 
 Renders pages using a headless browser, enabling access to content that requires JavaScript execution:
@@ -36,6 +48,14 @@ result = web_fetch_js(
     ]
 )
 ```
+
+### web_fetch_direct Capabilities
+
+Lightweight HTTP fetch without browser overhead:
+
+- **HTML pages** - Converts to markdown with section support
+- **JSON / XML / plain text** - Returns raw content with YAML frontmatter metadata
+- **Citation mode** - `cite=True` returns XML format with span indices for citation (legacy behavior, no section support)
 
 ## Setup
 
@@ -120,10 +140,12 @@ The `--profile` argument adjusts tool names and descriptions for the target clie
 
 | Profile | Target | Tool Names |
 |---------|--------|------------|
-| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js` |
+| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_direct` |
 | `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS` |
 
 The `desktop` profile (snake_case) is the default as it aligns with MCP ecosystem conventions. Claude Code's PascalCase naming is the exception, not the norm.
+
+`web_fetch_direct` is desktop-only — Claude Code has a built-in `WebFetch` tool that fills this role.
 
 ## Usage
 
@@ -136,4 +158,16 @@ uv run claude-web-tools --profile code
 
 # Show help
 uv run claude-web-tools --help
+```
+
+## Development
+
+### Running Tests
+
+```bash
+# Unit tests (mocked, no network)
+uv run pytest
+
+# Live integration tests (hits real endpoints)
+uv run pytest -m live
 ```
