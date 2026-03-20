@@ -132,8 +132,10 @@ _SLUG_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 def _slugify(text: str) -> str:
     """Convert heading text to a URL-fragment-style slug.
 
-    Mirrors the GitHub/HuggingFace anchor algorithm: lowercase, collapse
-    non-alphanumeric runs to single hyphens, strip leading/trailing hyphens.
+    Lowercase, collapse non-alphanumeric runs to single hyphens, strip
+    leading/trailing hyphens.  Produces Goldmark-style slugs (underscores
+    become hyphens).  GFM-style fragments (underscores preserved) are
+    handled by the fuzzy fallback in _filter_markdown_by_sections.
     """
     return _SLUG_NON_ALNUM_RE.sub('-', text.lower()).strip('-')
 
@@ -301,7 +303,21 @@ def _filter_markdown_by_sections(
                 "matched_fragment": req_name,
             })
         else:
-            unmatched.append(req_name)
+            # Fuzzy fallback: normalize underscores to hyphens and retry.
+            # Covers GFM↔Goldmark slug mismatch (GitHub/GitLab preserve
+            # underscores; Forgejo/HuggingFace convert them to hyphens).
+            fuzzy = req_name.replace("_", "-")
+            if fuzzy != req_name and fuzzy in slug_to_idx:
+                idx = slug_to_idx[fuzzy]
+                sec = sections[idx]
+                matched_parts.append(markdown[sec["start_pos"]:sec["end_pos"]].strip())
+                matched_meta.append({
+                    "name": sec["name"],
+                    "ancestry_path": _build_ancestry(idx),
+                    "matched_fragment": req_name,
+                })
+            else:
+                unmatched.append(req_name)
 
     result = "\n\n".join(matched_parts)
     return result, matched_meta, unmatched
