@@ -80,9 +80,10 @@ Supports HTML, plain text, JSON, and XML content types.""",
 
 Use this for academic paper lookups: search by keywords, get paper details
 (abstract, authors, citation counts, references), and find authors. Paper
-details include total and influential citation counts. Accepts paper IDs,
-DOI:10.xxx, ARXIV:2301.xxx, or S2 URLs. Semantic Scholar URLs are also
-handled automatically by {fetch} tools.""",
+details include total and influential citation counts. Search within paper
+body text using the snippets action. Accepts paper IDs, DOI:10.xxx,
+ARXIV:2301.xxx, or S2 URLs. Semantic Scholar URLs are also handled
+automatically by {fetch} tools.""",
 
     "web_fetch_sections": """List the section headings of a web page.
 

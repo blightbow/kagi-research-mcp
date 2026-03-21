@@ -18,7 +18,7 @@ All tool names vary by profile (see [Profile Options](#profile-options)).
 - **WebFetchSections** / **web_fetch_sections** - List section headings and anchor slugs for a web page
 
 ### Academic Papers
-- **SemanticScholar** / **semantic_scholar** - Search and retrieve academic paper data from Semantic Scholar (search, paper details, references, authors)
+- **SemanticScholar** / **semantic_scholar** - Search and retrieve academic paper data from Semantic Scholar (search, paper details, references, authors, body text snippets)
 
 ### Shared Features
 
@@ -245,6 +245,27 @@ attention mechanisms, dispensing with recurrence and convolutions entirely...
 The dominant sequence transduction models are based on complex recurrent
 or convolutional neural networks in an encoder-decoder configuration...
 ```
+
+**Semantic Scholar snippet search** — search within paper body text by section:
+
+```
+>>> semantic_scholar(action="snippets", query="multi-head attention",
+...                  paper_id="204e3073870fae3d05bcbc2f6a8e263d9b72e776")
+
+### Multi-Head Attention
+
+Instead of performing a single attention function with d_model-dimensional
+keys, values and queries, we found it beneficial to linearly project the
+queries, keys and values h times with different, learned linear projections...
+
+### Scaled Dot-Product Attention
+
+We call our particular attention "Scaled Dot-Product Attention" (Figure 2).
+The input consists of queries and keys of dimension d_k, and values of
+dimension d_v...
+```
+
+Corpus-wide search (no `paper_id`) returns results grouped by paper then section. A pre-flight check gates scoped searches on full-text availability; papers without it get an informative message suggesting the `paper` action for abstract/TL;DR.
 
 **Semantic Scholar URL interception** — S2 URLs are automatically handled by fetch tools:
 
