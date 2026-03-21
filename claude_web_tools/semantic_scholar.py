@@ -79,38 +79,53 @@ def _s2_headers() -> dict:
     return headers
 
 
+_S2_MAX_RETRIES = 3
+_S2_RETRY_BACKOFF = 1.25  # seconds; doubles each retry
+
+
 async def _s2_request(path: str, params: Optional[dict] = None) -> dict | str:
     """Core HTTP call to Semantic Scholar API.
 
     Returns parsed JSON dict on success, or an error string on failure.
-    Enforces a 1-second minimum interval between requests.
+    Enforces a 1-second minimum interval between requests and retries
+    with exponential backoff on HTTP 429.
     """
     global _s2_last_request
     url = f"{S2_BASE_URL}{path}"
 
-    async with _s2_rate_lock:
-        elapsed = time.monotonic() - _s2_last_request
-        if elapsed < _S2_MIN_INTERVAL:
-            await asyncio.sleep(_S2_MIN_INTERVAL - elapsed)
-        _s2_last_request = time.monotonic()
+    for attempt in range(_S2_MAX_RETRIES + 1):
+        async with _s2_rate_lock:
+            elapsed = time.monotonic() - _s2_last_request
+            if elapsed < _S2_MIN_INTERVAL:
+                await asyncio.sleep(_S2_MIN_INTERVAL - elapsed)
+            _s2_last_request = time.monotonic()
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers=_s2_headers(), params=params)
-    except httpx.TimeoutException:
-        return "Error: Semantic Scholar API request timed out."
-    except httpx.RequestError as e:
-        return f"Error: Semantic Scholar API request failed - {type(e).__name__}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=_s2_headers(), params=params)
+        except httpx.TimeoutException:
+            return "Error: Semantic Scholar API request timed out."
+        except httpx.RequestError as e:
+            return f"Error: Semantic Scholar API request failed - {type(e).__name__}"
 
-    if response.status_code == 200:
-        return response.json()
-    if response.status_code == 404:
-        return "Error: Not found on Semantic Scholar."
-    if response.status_code == 429:
-        if _get_s2_api_key():
-            return "Error: Rate limited (HTTP 429). Try again shortly."
-        return f"Error: {_NO_KEY_MSG}"
-    return f"Error: Semantic Scholar API returned HTTP {response.status_code}."
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 404:
+            return "Error: Not found on Semantic Scholar."
+        if response.status_code == 429:
+            if attempt < _S2_MAX_RETRIES:
+                backoff = _S2_RETRY_BACKOFF * (2 ** attempt)
+                logger.info("S2 rate limited (429), retry %d after %.1fs", attempt + 1, backoff)
+                await asyncio.sleep(backoff)
+                continue
+            # Exhausted retries
+            if _get_s2_api_key():
+                return "Error: Rate limited (HTTP 429). Try again shortly."
+            return f"Error: {_NO_KEY_MSG}"
+        return f"Error: Semantic Scholar API returned HTTP {response.status_code}."
+
+    # Unreachable, but satisfies type checker
+    return "Error: Semantic Scholar API request failed."
 
 
 def _detect_s2_url(url: str) -> Optional[str]:
@@ -289,12 +304,71 @@ async def _fetch_s2_paper(paper_id: str) -> str:
     return fm + "\n\n" + _format_paper_detail(result)
 
 
+def _format_snippets(data: dict, paper_id: Optional[str] = None) -> str:
+    """Format snippet search results as markdown.
+
+    For single-paper results (paper_id given): group by section.
+    For corpus-wide results: group by paper, then section.
+    """
+    results = data.get("data") or []
+    if not results:
+        if paper_id:
+            return f"No snippet matches found in paper {paper_id}."
+        return "No snippet matches found."
+
+    if paper_id:
+        # Single-paper: group by section
+        sections: dict[str, list[str]] = {}
+        for item in results:
+            snippet = item.get("snippet", {})
+            section = snippet.get("section") or "Untitled Section"
+            text = snippet.get("text", "")
+            kind = snippet.get("snippetKind", "body")
+            if kind != "body":
+                text = f"[{kind}] {text}"
+            sections.setdefault(section, []).append(text)
+
+        parts = []
+        for section, texts in sections.items():
+            parts.append(f"### {section}\n")
+            for t in texts:
+                parts.append(t + "\n")
+        return "\n".join(parts)
+    else:
+        # Corpus-wide: group by paper
+        papers: dict[str, dict] = {}  # corpusId -> {title, sections}
+        for item in results:
+            paper = item.get("paper", {})
+            corpus_id = str(paper.get("corpusId", "unknown"))
+            title = paper.get("title", "Untitled")
+            snippet = item.get("snippet", {})
+            section = snippet.get("section") or "Untitled Section"
+            text = snippet.get("text", "")
+            kind = snippet.get("snippetKind", "body")
+            if kind != "body":
+                text = f"[{kind}] {text}"
+
+            if corpus_id not in papers:
+                papers[corpus_id] = {"title": title, "sections": {}}
+            papers[corpus_id]["sections"].setdefault(section, []).append(text)
+
+        parts = []
+        for corpus_id, info in papers.items():
+            parts.append(f"## {info['title']}\n")
+            for section, texts in info["sections"].items():
+                parts.append(f"### {section}\n")
+                for t in texts:
+                    parts.append(t + "\n")
+        return "\n".join(parts)
+
+
 async def semantic_scholar(
     action: str,
     query: str,
     limit: int = 10,
     offset: int = 0,
     fields: Optional[str] = None,
+    paper_id: Optional[str] = None,
 ) -> str:
     """Search and retrieve academic paper data from Semantic Scholar.
 
@@ -304,19 +378,25 @@ async def semantic_scholar(
     - "references": Get papers referenced by a paper. query = paper ID or DOI/ARXIV/PMID prefix.
     - "author_search": Search authors by name. query = author name.
     - "author": Get author details and top papers. query = S2 author ID.
+    - "snippets": Search within paper body text. query = search terms. Optionally scope to a single paper with paper_id.
 
     Args:
-        action: The operation to perform (search, paper, references, author_search, author)
+        action: The operation to perform (search, paper, references, author_search, author, snippets)
         query: Search terms, paper ID, or author ID depending on action
         limit: Maximum results to return (default 10, max varies by endpoint)
         offset: Starting position for pagination (default 0)
         fields: Comma-separated field names to override defaults (advanced)
+        paper_id: Paper ID to scope snippet search (only used by snippets action)
     """
-    # Resolve S2 URLs to paper IDs for paper/references actions
-    if action in ("paper", "references"):
+    # Resolve S2 URLs to paper IDs for paper/references/snippets actions
+    if action in ("paper", "references", "snippets"):
         detected_id = _detect_s2_url(query)
         if detected_id:
             query = detected_id
+        if action == "snippets" and paper_id:
+            pid_detected = _detect_s2_url(paper_id)
+            if pid_detected:
+                paper_id = pid_detected
 
     if action == "search":
         params = {
@@ -413,8 +493,33 @@ async def semantic_scholar(
 
         return _format_author(result, papers=papers)
 
+    elif action == "snippets":
+        # Pre-flight: check text availability when scoped to a single paper
+        if paper_id:
+            avail_result = await _s2_request(
+                f"/paper/{paper_id}", {"fields": "textAvailability"}
+            )
+            if isinstance(avail_result, str):
+                return avail_result
+            text_avail = avail_result.get("textAvailability")
+            if text_avail != "fulltext":
+                title = avail_result.get("title", paper_id)
+                return (
+                    f"Full text is not available for \"{title}\" "
+                    f"(textAvailability: {text_avail}). "
+                    "Try the paper action for abstract and TL;DR instead."
+                )
+
+        params = {"query": query, "limit": min(limit, 1000)}
+        if paper_id:
+            params["paperIds"] = paper_id
+        result = await _s2_request("/snippet/search", params)
+        if isinstance(result, str):
+            return result
+        return _format_snippets(result, paper_id=paper_id)
+
     else:
         return (
             f"Error: Unknown action '{action}'. "
-            "Valid actions: search, paper, references, author_search, author"
+            "Valid actions: search, paper, references, author_search, author, snippets"
         )

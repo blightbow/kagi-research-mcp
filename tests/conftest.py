@@ -280,3 +280,109 @@ S2_AUTHOR_PAPERS_RESPONSE = {
         },
     ],
 }
+
+S2_TEXT_AVAILABILITY_FULLTEXT = {
+    "paperId": "204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+    "title": "Attention is All you Need",
+    "textAvailability": "fulltext",
+}
+
+S2_TEXT_AVAILABILITY_NONE = {
+    "paperId": "204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+    "title": "Attention is All you Need",
+    "textAvailability": "abstract",
+}
+
+S2_SNIPPET_RESPONSE = {
+    "data": [
+        {
+            "score": 0.95,
+            "paper": {
+                "corpusId": 204,
+                "title": "Attention is All you Need",
+                "authors": [
+                    {"name": "Ashish Vaswani"},
+                    {"name": "Noam Shazeer"},
+                ],
+            },
+            "snippet": {
+                "text": "Multi-head attention allows the model to jointly attend to information from different representation subspaces at different positions.",
+                "snippetKind": "body",
+                "section": "Multi-Head Attention",
+                "snippetOffset": 1234,
+                "annotations": [],
+            },
+        },
+        {
+            "score": 0.88,
+            "paper": {
+                "corpusId": 204,
+                "title": "Attention is All you Need",
+                "authors": [
+                    {"name": "Ashish Vaswani"},
+                    {"name": "Noam Shazeer"},
+                ],
+            },
+            "snippet": {
+                "text": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.",
+                "snippetKind": "abstract",
+                "section": "Abstract",
+                "snippetOffset": 0,
+                "annotations": [],
+            },
+        },
+        {
+            "score": 0.82,
+            "paper": {
+                "corpusId": 204,
+                "title": "Attention is All you Need",
+                "authors": [
+                    {"name": "Ashish Vaswani"},
+                    {"name": "Noam Shazeer"},
+                ],
+            },
+            "snippet": {
+                "text": "An attention function can be described as mapping a query and a set of key-value pairs to an output.",
+                "snippetKind": "body",
+                "section": "Scaled Dot-Product Attention",
+                "snippetOffset": 2345,
+                "annotations": [],
+            },
+        },
+    ],
+}
+
+S2_SNIPPET_CORPUS_RESPONSE = {
+    "data": [
+        {
+            "score": 0.95,
+            "paper": {
+                "corpusId": 204,
+                "title": "Attention is All you Need",
+                "authors": [{"name": "Ashish Vaswani"}],
+            },
+            "snippet": {
+                "text": "Multi-head attention allows the model to jointly attend to information.",
+                "snippetKind": "body",
+                "section": "Multi-Head Attention",
+                "snippetOffset": 1234,
+                "annotations": [],
+            },
+        },
+        {
+            "score": 0.85,
+            "paper": {
+                "corpusId": 999,
+                "title": "BERT: Pre-training of Deep Bidirectional Transformers",
+                "authors": [{"name": "Jacob Devlin"}],
+            },
+            "snippet": {
+                "text": "We use multi-headed self-attention to encode the input sequence.",
+                "snippetKind": "body",
+                "section": "Model Architecture",
+                "snippetOffset": 567,
+                "annotations": [],
+            },
+        },
+    ],
+}

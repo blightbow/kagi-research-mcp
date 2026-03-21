@@ -18,6 +18,7 @@ from claude_web_tools.semantic_scholar import (
     _format_author,
     _format_paper_detail,
     _format_paper_list,
+    _format_snippets,
     _get_s2_api_key,
     _s2_request,
     semantic_scholar,
@@ -31,6 +32,10 @@ from .conftest import (
     S2_AUTHOR_SEARCH_RESPONSE,
     S2_AUTHOR_DETAIL_RESPONSE,
     S2_AUTHOR_PAPERS_RESPONSE,
+    S2_TEXT_AVAILABILITY_FULLTEXT,
+    S2_TEXT_AVAILABILITY_NONE,
+    S2_SNIPPET_RESPONSE,
+    S2_SNIPPET_CORPUS_RESPONSE,
 )
 
 
@@ -124,6 +129,7 @@ class TestS2Request:
     async def test_429_without_key(self, monkeypatch):
         monkeypatch.delenv("S2_API_KEY", raising=False)
         monkeypatch.setattr(_s2_module, "S2_CONFIG_PATH", Path("/nonexistent/path"))
+        monkeypatch.setattr(_s2_module, "_S2_MAX_RETRIES", 0)
         respx.get(f"{S2_BASE_URL}/paper/search").mock(
             return_value=httpx.Response(429)
         )
@@ -136,6 +142,7 @@ class TestS2Request:
     @respx.mock
     async def test_429_with_key(self, monkeypatch):
         monkeypatch.setenv("S2_API_KEY", "my-key")
+        monkeypatch.setattr(_s2_module, "_S2_MAX_RETRIES", 0)
         respx.get(f"{S2_BASE_URL}/paper/search").mock(
             return_value=httpx.Response(429)
         )
@@ -143,6 +150,32 @@ class TestS2Request:
         assert "Rate limited" in result
         assert "Try again" in result
         assert "S2_API_KEY" not in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_429_retry_then_success(self, monkeypatch):
+        monkeypatch.setattr(_s2_module, "_S2_RETRY_BACKOFF", 0.0)
+        route = respx.get(f"{S2_BASE_URL}/paper/search")
+        route.side_effect = [
+            httpx.Response(429),
+            httpx.Response(200, json={"data": []}),
+        ]
+        result = await _s2_request("/paper/search", {"query": "test"})
+        assert isinstance(result, dict)
+        assert result == {"data": []}
+        assert route.call_count == 2
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_429_exhausts_retries(self, monkeypatch):
+        monkeypatch.setattr(_s2_module, "_S2_MAX_RETRIES", 2)
+        monkeypatch.setattr(_s2_module, "_S2_RETRY_BACKOFF", 0.0)
+        monkeypatch.setenv("S2_API_KEY", "my-key")
+        route = respx.get(f"{S2_BASE_URL}/paper/search")
+        route.mock(return_value=httpx.Response(429))
+        result = await _s2_request("/paper/search", {"query": "test"})
+        assert "Rate limited" in result
+        assert route.call_count == 3  # initial + 2 retries
 
     @pytest.mark.asyncio
     @respx.mock
@@ -337,6 +370,88 @@ class TestSemanticScholarInvalidAction:
         result = await semantic_scholar("invalid_action", "test")
         assert "Unknown action" in result
         assert "invalid_action" in result
+        assert "snippets" in result
+
+
+# ---------------------------------------------------------------------------
+# semantic_scholar — snippets
+# ---------------------------------------------------------------------------
+
+class TestSemanticScholarSnippets:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_snippets_with_paper_id(self):
+        paper_id = "204e3073870fae3d05bcbc2f6a8e263d9b72e776"
+        respx.get(f"{S2_BASE_URL}/paper/{paper_id}").mock(
+            return_value=httpx.Response(200, json=S2_TEXT_AVAILABILITY_FULLTEXT)
+        )
+        respx.get(f"{S2_BASE_URL}/snippet/search").mock(
+            return_value=httpx.Response(200, json=S2_SNIPPET_RESPONSE)
+        )
+        result = await semantic_scholar(
+            "snippets", "multi-head attention", paper_id=paper_id
+        )
+        assert "### Multi-Head Attention" in result
+        assert "jointly attend" in result
+        assert "### Scaled Dot-Product Attention" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_snippets_corpus_wide(self):
+        respx.get(f"{S2_BASE_URL}/snippet/search").mock(
+            return_value=httpx.Response(200, json=S2_SNIPPET_CORPUS_RESPONSE)
+        )
+        result = await semantic_scholar("snippets", "multi-head attention")
+        assert "## Attention is All you Need" in result
+        assert "## BERT" in result
+        assert "### Multi-Head Attention" in result
+        assert "### Model Architecture" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_snippets_no_full_text(self):
+        paper_id = "204e3073870fae3d05bcbc2f6a8e263d9b72e776"
+        respx.get(f"{S2_BASE_URL}/paper/{paper_id}").mock(
+            return_value=httpx.Response(200, json=S2_TEXT_AVAILABILITY_NONE)
+        )
+        result = await semantic_scholar(
+            "snippets", "attention", paper_id=paper_id
+        )
+        assert "Full text is not available" in result
+        assert "paper action" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_snippets_empty_results(self):
+        paper_id = "204e3073870fae3d05bcbc2f6a8e263d9b72e776"
+        respx.get(f"{S2_BASE_URL}/paper/{paper_id}").mock(
+            return_value=httpx.Response(200, json=S2_TEXT_AVAILABILITY_FULLTEXT)
+        )
+        respx.get(f"{S2_BASE_URL}/snippet/search").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+        result = await semantic_scholar(
+            "snippets", "nonexistent topic", paper_id=paper_id
+        )
+        assert "No snippet matches found" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_snippets_abstract_kind_tagged(self):
+        paper_id = "204e3073870fae3d05bcbc2f6a8e263d9b72e776"
+        respx.get(f"{S2_BASE_URL}/paper/{paper_id}").mock(
+            return_value=httpx.Response(200, json=S2_TEXT_AVAILABILITY_FULLTEXT)
+        )
+        respx.get(f"{S2_BASE_URL}/snippet/search").mock(
+            return_value=httpx.Response(200, json=S2_SNIPPET_RESPONSE)
+        )
+        result = await semantic_scholar(
+            "snippets", "attention", paper_id=paper_id
+        )
+        # The abstract snippet should be tagged with [abstract]
+        assert "[abstract]" in result
+        # Body snippets should NOT be tagged
+        assert "[body]" not in result
 
 
 # ---------------------------------------------------------------------------
