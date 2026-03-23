@@ -11,6 +11,7 @@ dependencies = [
     "httpx",
     "playwright",
     "markdownify",
+    "tantivy>=0.25.1",
 ]
 
 [project.scripts]
@@ -31,4 +32,6 @@ dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "respx>=0.22.0",
+    "semantic-text-splitter>=0.29.0",
+    "tantivy>=0.25.1",
 ]

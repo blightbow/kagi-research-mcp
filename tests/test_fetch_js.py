@@ -8,7 +8,7 @@ import pytest
 import respx
 
 from kagi_research_mcp.fetch_js import web_fetch_js
-from kagi_research_mcp._pipeline import _wiki_cache
+from kagi_research_mcp._pipeline import _wiki_cache, _page_cache
 
 from .conftest import (
     MEDIAWIKI_QUERY_RESPONSE,
@@ -17,12 +17,17 @@ from .conftest import (
 
 
 @pytest.fixture(autouse=True)
-def clear_wiki_cache():
-    """Ensure each test starts with an empty MediaWiki page cache."""
+def clear_caches():
+    """Ensure each test starts with empty caches."""
     yield
     _wiki_cache.url = None
     _wiki_cache.wiki_info = None
     _wiki_cache.wiki_page = None
+    _page_cache.url = None
+    _page_cache.title = None
+    _page_cache.markdown = None
+    _page_cache.slices = None
+    _page_cache.slice_ancestry = None
 
 
 class TestWebFetchJsMediawikiFastPath:
