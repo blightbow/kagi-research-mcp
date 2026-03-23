@@ -2,8 +2,6 @@
 
 A research synthesis pipeline for MCP. Enables agents to perform targeted content extraction from websites and research papers. Integrates with the APIs for Kagi Search, Kagi Summarize, Semantic Scholar, and MediaWiki. It is primarily designed for Claude Code and Claude Desktop, but should be adaptable to most needs.
 
-Note: This project is a third-party tool unaffiliated with Kagi.com. Usage of their name has been generously allowed with this attribution.
-
 ## Attribution
 
 This tool accesses the [Semantic Scholar](https://www.semanticscholar.org/) API. Per the [S2 API license](https://www.semanticscholar.org/product/api/license), contributions to your work through the use of S2's API requires attribution to Semantic Scholar.
@@ -11,9 +9,11 @@ This tool accesses the [Semantic Scholar](https://www.semanticscholar.org/) API.
 - If you are using this MCP server for purposes adjacent to research papers, _you should preemptively assume that this license applies to your outputs_.
 - It goes without saying that any research you incorporate should also be credited as appropriate. Please be a responsible netizen.
 
+**Note:** This project is a third-party tool unaffiliated with Kagi.com. Usage of their name has been generously allowed with this attribution.
+
 ## Purpose
 
-There is a cavernous difference between good context and bad context. Modern LLM solutions have converged on agentic toolchains that pair cheaper text analysis LLMs (Haiku) with larger models that excel at reasoning (Opus), but sometimes the finer details get lost in this process. In a worst case scenario, sometimes these details get hallucinated during the summarization processs...**including the attributed authors of the papers themselves**.
+There is a cavernous difference between good context and bad context. Modern LLM solutions have converged on agentic toolchains that pair cheaper text analysis LLMs (Haiku) with larger models that excel at reasoning (Opus), but sometimes the finer details get lost in this process. In a worst case scenario, sometimes these details get hallucinated during the summarization process...**including the attributed authors of the papers themselves**.
 
 This MCP server implements a different approach that is grounded in targeted text extraction and reasoning chains. By breaking a page down into section headings and presenting it as a table of contents, the LLM can understand the composition of a document before making any further decisions.
 
@@ -200,7 +200,7 @@ calculator answers with the number 42.[^15]
 
 ### Special MediaWiki Handling
 
-When one of the well-known MediaWiki URI schemas are detected, the tool automatically switches fetching the artcile using the MediaWiki API and strips out the navigation boxes. This makes the Markdown conversion process less noisy (no extra HTML), and also plays nicely with Wikipedia
+When one of the well-known MediaWiki URI schemas are detected, the tool automatically switches fetching the article using the MediaWiki API and strips out the navigation boxes. This makes the Markdown conversion process less noisy (no extra HTML), and also plays nicely with Wikipedia
 
 It also makes it easy to convert citation links into Markdown footnotes (seen above), which can then be obtained with another tool call. This surfaces additional content that can then be pulled into the research process.
 
@@ -311,6 +311,29 @@ content_type: json
   }
 }
 ```
+## Usage
+
+```bash
+# Default (desktop profile, snake_case naming)
+uv run kagi-research-mcp
+
+# Claude Code profile (PascalCase naming)
+uv run kagi-research-mcp --profile code
+
+# Show help
+uv run kagi-research-mcp --help
+```
+
+## Profile Options
+
+The `--profile` argument adjusts tool names and descriptions for the target client. Each profile tailors the descriptions to explain how the MCP tools complement that client's built-in capabilities — for example, the `code` profile describes `WebFetchDirect` as returning full unsummarized text (vs Claude Code's summarizing `WebFetch`), while the `desktop` profile describes it as a local-fetch fallback for when Claude Desktop's server-proxied `web_fetch` gets rate-limited by the target site:
+
+| Profile | Target | Tool Names |
+|---------|--------|------------|
+| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_direct`, `web_fetch_sections`, `semantic_scholar` |
+| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS`, `WebFetchDirect`, `WebFetchSections`, `SemanticScholar` |
+
+The `desktop` profile (snake_case) is the default as it aligns with MCP ecosystem conventions. Claude Code's PascalCase naming is the exception, not the norm.
 
 ## Tools
 
@@ -360,6 +383,37 @@ The search and slicing workflow mirrors the SemanticScholar `snippets` action �
 
 ## Setup
 
+### Configuration
+
+#### Claude Code
+
+Add to your `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "kagi-research-mcp": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/kagi-research-mcp", "run", "kagi-research-mcp", "--profile", "code"]
+    }
+  }
+}
+```
+
+#### Claude Desktop (macOS)
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "kagi-research-mcp": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/kagi-research-mcp", "run", "kagi-research-mcp", "--profile", "desktop"]
+    }
+  }
+}
+```
 ### Kagi API Key (for search/summarize tools)
 
 Set your Kagi API key via environment variable or config file:
@@ -418,61 +472,7 @@ export PLAYWRIGHT_BROWSER=chromium
 
 The active browser is shown in tool output: `[Browser: WebKit | ...]`
 
-## Configuration
 
-### Claude Code
-
-Add to your `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "kagi-research-mcp": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/kagi-research-mcp", "run", "kagi-research-mcp", "--profile", "code"]
-    }
-  }
-}
-```
-
-### Claude Desktop (macOS)
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "kagi-research-mcp": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/kagi-research-mcp", "run", "kagi-research-mcp", "--profile", "desktop"]
-    }
-  }
-}
-```
-
-## Profile Options
-
-The `--profile` argument adjusts tool names and descriptions for the target client. Each profile tailors the descriptions to explain how the MCP tools complement that client's built-in capabilities — for example, the `code` profile describes `WebFetchDirect` as returning full unsummarized text (vs Claude Code's summarizing `WebFetch`), while the `desktop` profile describes it as a local-fetch fallback for when Claude Desktop's server-proxied `web_fetch` gets rate-limited by the target site:
-
-| Profile | Target | Tool Names |
-|---------|--------|------------|
-| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_direct`, `web_fetch_sections`, `semantic_scholar` |
-| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS`, `WebFetchDirect`, `WebFetchSections`, `SemanticScholar` |
-
-The `desktop` profile (snake_case) is the default as it aligns with MCP ecosystem conventions. Claude Code's PascalCase naming is the exception, not the norm.
-
-## Usage
-
-```bash
-# Default (desktop profile, snake_case naming)
-uv run kagi-research-mcp
-
-# Claude Code profile (PascalCase naming)
-uv run kagi-research-mcp --profile code
-
-# Show help
-uv run kagi-research-mcp --help
-```
 
 ## Development
 
@@ -550,5 +550,5 @@ Also, why would you connect a tool designed with almost no synthesis of research
 
 - Kagi.com for permission to use the Kagi name, and providing tools that were a natural fit for our needs.
 - SemanticScholar.org for providing a much more accessible alternative to Google Scholar, and a fast turnaround on the API key for our internal testing.
-- Wikipedia.com for allowing this tool to leverage the MediaWiki API at the easy cost of a user-agent header.
+- Wikipedia.org for allowing this tool to leverage the MediaWiki API at the easy cost of a user-agent header.
 - The authors of the Python dependencies used by this MCP server. There are too many of you to list individually, but we appreciate your work greatly.
