@@ -408,7 +408,8 @@ async def web_fetch_js(
         "iframe_source": iframe_source or None,
     }
     output = _process_markdown_sections(
-        markdown_content, section_names, max_tokens, frontmatter_entries
+        markdown_content, section_names, max_tokens, frontmatter_entries,
+        cache_url=url,
     )
 
     if interactive_elements:

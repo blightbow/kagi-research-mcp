@@ -14,6 +14,7 @@ from ._pipeline import (
     _extract_fragment, _normalize_sections, _resolve_fragment_source,
     _mediawiki_fast_path, _s2_fast_path, _process_markdown_sections,
     _cached_mediawiki_fetch,
+    _page_cache, _search_slices, _get_slices,
 )
 from .mediawiki import _mediawiki_html_to_markdown, _extract_citations, _format_citations
 
@@ -25,6 +26,8 @@ async def web_fetch_direct(
     max_tokens: int = 5000,
     section: Optional[Union[str, list[str]]] = None,
     footnotes: Optional[Union[int, list[int]]] = None,
+    search: Optional[str] = None,
+    slices: Optional[Union[int, list[int]]] = None,
 ) -> str:
     """Fetch raw content from a URL without JavaScript rendering.
 
@@ -36,11 +39,17 @@ async def web_fetch_direct(
     markers; use the footnotes parameter to retrieve specific entries
     (e.g. footnotes=4 or footnotes=[1,3,8]).
 
+    For long or poorly-sectioned pages, use search for BM25 keyword search
+    (returns matching ~500-token slices ranked by relevance, terms matched
+    independently), or slices to retrieve specific slices by index.
+
     Args:
         url: The URL to fetch
         max_tokens: Limit on content length in approximate token count (default 5000)
         section: Section name or list of section names to extract from the page
         footnotes: Footnote number or list of numbers to retrieve from the page
+        search: Search terms for BM25 keyword matching within cached page content
+        slices: Slice index or list of indices to retrieve from cached page content
     """
     # Extract fragment from URL (e.g. #section-name) as implicit section request
     url, fragment = _extract_fragment(url)
@@ -48,6 +57,38 @@ async def web_fetch_direct(
     if fragment and not section_names:
         section_names = [fragment]
     source_url, fragment_warning = _resolve_fragment_source(url, fragment, section)
+
+    # Normalize empty search/slices to None
+    if search is not None and search == "":
+        search = None
+    slices_list: list[int] = []
+    if slices is not None:
+        slices_list = [slices] if isinstance(slices, int) else list(slices)
+        if not slices_list:
+            slices = None
+    want_slicing = search is not None or slices is not None
+
+    # --- Parameter validation ---
+    if search is not None and slices is not None:
+        return "Error: 'search' and 'slices' are mutually exclusive."
+    if want_slicing and section_names:
+        return "Error: 'search'/'slices' and 'section' are mutually exclusive."
+    if want_slicing and footnotes is not None:
+        return "Error: 'search'/'slices' and 'footnotes' are mutually exclusive."
+
+    # --- Search/slices cache-first path ---
+    if want_slicing:
+        fm_base = {"source": source_url}
+        cached = _page_cache.get(url)
+        if cached:
+            fm_base["title"] = cached.title
+            if search is not None:
+                return _search_slices(url, search, max_tokens, fm_base) or \
+                    "Error: Page cache unavailable."
+            else:
+                return _get_slices(url, slices_list, max_tokens, fm_base) or \
+                    "Error: Page cache unavailable."
+        # Cache miss — fall through to fetch, which populates the cache
 
     # --- Footnote-only path (MediaWiki pages) ---
     if footnotes is not None:
@@ -81,9 +122,16 @@ async def web_fetch_direct(
 
     # --- Semantic Scholar fast path ---
     try:
-        result = await _s2_fast_path(url)
-        if result is not None:
-            return result
+        from .semantic_scholar import _detect_s2_url
+        if _detect_s2_url(url):
+            if want_slicing:
+                return (
+                    "Error: search/slices not supported for Semantic Scholar URLs. "
+                    "Use the SemanticScholar tool's snippets action instead."
+                )
+            result = await _s2_fast_path(url)
+            if result is not None:
+                return result
     except Exception:
         pass
 
@@ -92,8 +140,12 @@ async def web_fetch_direct(
         result = await _mediawiki_fast_path(
             url, section_names, max_tokens,
             extra_entries={"source": source_url, "warning": fragment_warning},
+            cache_url=url,
         )
         if result is not None:
+            if want_slicing:
+                return _dispatch_slicing(url, search, slices, slices_list if slices is not None else [],
+                                         max_tokens, source_url)
             return result
     except Exception:
         pass  # Fall through to HTTP fetch
@@ -125,9 +177,10 @@ async def web_fetch_direct(
             f"Supported: text/html, text/plain, application/json, application/xml."
         )
 
-    # --- Markdown output ---
+    # --- Non-HTML content ---
     if is_plain or is_json or is_xml:
-        # Non-HTML content: YAML frontmatter + raw body
+        if want_slicing:
+            return "Error: search/slices requires HTML content."
         text = response.text.strip()
         if not text:
             return f"Error: No content extracted from {url}"
@@ -159,8 +212,36 @@ async def web_fetch_direct(
     output = _process_markdown_sections(
         markdown_content, section_names, max_tokens,
         {"title": title, "source": source_url, "warning": fragment_warning},
+        cache_url=url,
     )
+
+    # If search/slices was requested, the cache is now populated — dispatch
+    if want_slicing:
+        return _dispatch_slicing(url, search, slices, slices_list if slices is not None else [],
+                                 max_tokens, source_url)
+
     return output
+
+
+def _dispatch_slicing(
+    url: str,
+    search: Optional[str],
+    slices: Optional[Union[int, list[int]]],
+    slices_list: list[int],
+    max_tokens: int,
+    source_url: str,
+) -> str:
+    """Dispatch to search or slice retrieval after cache has been populated."""
+    cached = _page_cache.get(url)
+    if not cached:
+        return "Error: Page cache could not be populated for this URL."
+    fm_base = {"title": cached.title, "source": source_url}
+    if search is not None:
+        return _search_slices(url, search, max_tokens, fm_base) or \
+            "Error: Page cache unavailable."
+    else:
+        return _get_slices(url, slices_list, max_tokens, fm_base) or \
+            "Error: Page cache unavailable."
 
 
 async def web_fetch_sections(url: str) -> str:

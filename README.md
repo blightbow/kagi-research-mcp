@@ -76,6 +76,10 @@ Lightweight HTTP fetch without browser overhead:
 - **HTML pages** - Converts to markdown with section support
 - **JSON / XML / plain text** - Returns raw content with YAML frontmatter metadata
 - **Footnote retrieval** - `footnotes=4` or `footnotes=[1,3,8]` returns specific numbered entries from MediaWiki pages, with bibliography resolution for author-date shorthand
+- **BM25 keyword search** - `search="terms"` does BM25 keyword search over ~500-token slices of the page. Terms are matched independently and results are ranked by relevance (powered by [tantivy](https://github.com/quickwit-oss/tantivy-py)). Pages are chunked using [semantic-text-splitter](https://github.com/benbrandt/text-splitter)'s `MarkdownSplitter`, which respects heading and paragraph boundaries. Each matching slice is returned with a section ancestry breadcrumb (e.g. `Methodology > Approach A (2/3)`).
+- **Slice retrieval** - `slices=[3, 4, 5]` retrieves specific slices by index from the cached page. Use this to fetch adjacent context after a search, or to page through a large document. The page cache is single-entry and auto-evicts when a new URL is fetched.
+
+The search and slicing workflow mirrors the SemanticScholar `snippets` action — both use BM25 keyword matching over ~500-token chunks tagged by section.
 
 ### Sample Output
 
@@ -229,6 +233,50 @@ footnotes_only: True
 
 [^14]: ["Mathematical Fiction: Hitchhiker's Guide to the Galaxy"](http://kasmana.people.cofc.edu/MATHFICT/mfview.php?callnumber=mf458)
 [^15]: ["17 amazing Google Easter eggs"](https://www.cbsnews.com/pictures/17-amazing-google-easter-eggs/2/)
+```
+
+**BM25 keyword search** — find relevant content in long or poorly-sectioned pages:
+
+```
+>>> web_fetch_direct("https://example.com/long-article", search="attention mechanism")
+---
+title: Long Article
+source: https://example.com/long-article
+total_slices: 42
+search: "attention mechanism"
+matched_slices: [3, 7, 15]
+hint: Use slices= to retrieve adjacent context by index
+---
+
+--- slice 3 (Background > Historical Context) ---
+...content containing attention and mechanism...
+
+--- slice 7 (Methodology (1/3)) ---
+...content mentioning attention mechanism...
+
+--- slice 15 (Results > Quantitative (2/2)) ---
+...content about attention mechanism results...
+```
+
+**Slice retrieval** — fetch adjacent context by index after a search:
+
+```
+>>> web_fetch_direct("https://example.com/long-article", slices=[7, 8, 9])
+---
+title: Long Article
+source: https://example.com/long-article
+total_slices: 42
+slices: [7, 8, 9]
+---
+
+--- slice 7 (Methodology (1/3)) ---
+...first third of the Methodology section...
+
+--- slice 8 (Methodology (2/3)) ---
+...second third of the Methodology section...
+
+--- slice 9 (Methodology (3/3)) ---
+...final third of the Methodology section...
 ```
 
 **Semantic Scholar paper lookup** — structured paper data via API:

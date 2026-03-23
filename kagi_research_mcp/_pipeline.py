@@ -8,12 +8,16 @@ import logging
 from typing import Optional
 from urllib.parse import urldefrag
 
+import tantivy
+from semantic_text_splitter import MarkdownSplitter
+
 from .markdown import (
     _extract_sections_from_markdown,
     _build_section_list,
     _filter_markdown_by_sections,
     _build_frontmatter,
     _apply_truncation,
+    _compute_slice_ancestry,
 )
 from .mediawiki import _detect_mediawiki, _fetch_mediawiki_page, _mediawiki_html_to_markdown
 from .semantic_scholar import _detect_s2_url, _fetch_s2_paper
@@ -52,6 +56,80 @@ class _WikiCache:
 
 
 _wiki_cache = _WikiCache()
+
+
+# ---------------------------------------------------------------------------
+# Single-entry page cache (post-markdown-conversion)
+# ---------------------------------------------------------------------------
+# Caches the most recently fetched page as pre-sliced content for keyword
+# search and index-based retrieval.  Populated by _process_markdown_sections
+# (all HTML paths feed through it).  Evicts automatically on a new URL.
+
+class _PageCache:
+    """Single-entry cache for sliced page content with BM25 search index."""
+
+    __slots__ = ("url", "title", "markdown", "slices", "slice_ancestry",
+                 "_tantivy_index")
+
+    _SPLITTER = MarkdownSplitter((1600, 2000))
+
+    # Shared tantivy schema — one text field for content, one for slice index
+    _SCHEMA = None
+
+    @classmethod
+    def _get_schema(cls):
+        if cls._SCHEMA is None:
+            builder = tantivy.SchemaBuilder()
+            builder.add_text_field("body", stored=True)
+            builder.add_unsigned_field("idx", stored=True)
+            cls._SCHEMA = builder.build()
+        return cls._SCHEMA
+
+    def __init__(self):
+        self.url: Optional[str] = None
+        self.title: Optional[str] = None
+        self.markdown: Optional[str] = None
+        self.slices: Optional[list[str]] = None
+        self.slice_ancestry: Optional[list[str]] = None
+        self._tantivy_index = None
+
+    def get(self, url: str):
+        """Return self if url matches (access .slices, .title, etc.), else None."""
+        if self.url == url:
+            return self
+        return None
+
+    def store(self, url: str, title: str, markdown: str):
+        """Slice markdown, build BM25 index, and cache results."""
+        self.url = url
+        self.title = title
+        self.markdown = markdown
+        chunks = self._SPLITTER.chunk_indices(markdown)
+        self.slices = [text for _, text in chunks]
+        offsets = [offset for offset, _ in chunks]
+        sections = _extract_sections_from_markdown(markdown)
+        self.slice_ancestry = _compute_slice_ancestry(sections, offsets)
+
+        # Build tantivy in-memory search index over slices
+        schema = self._get_schema()
+        self._tantivy_index = tantivy.Index(schema)
+        writer = self._tantivy_index.writer()
+        for i, text in enumerate(self.slices):
+            writer.add_document(tantivy.Document(body=text, idx=i))
+        writer.commit()
+        self._tantivy_index.reload()
+
+    def search(self, query_str: str, limit: int = 50) -> list[int]:
+        """BM25 search over cached slices. Returns matching slice indices ranked by relevance."""
+        if not self._tantivy_index or not self.slices:
+            return []
+        query = self._tantivy_index.parse_query(query_str, ["body"])
+        searcher = self._tantivy_index.searcher()
+        results = searcher.search(query, limit=limit)
+        return [searcher.doc(addr)["idx"][0] for _score, addr in results.hits]
+
+
+_page_cache = _PageCache()
 
 
 async def _cached_mediawiki_fetch(url: str) -> tuple[Optional[dict], Optional[dict]]:
@@ -121,6 +199,7 @@ async def _mediawiki_fast_path(
     section_names: Optional[list[str]],
     max_tokens: int,
     extra_entries: Optional[dict] = None,
+    cache_url: Optional[str] = None,
 ) -> Optional[str]:
     """Attempt to fetch a MediaWiki page via the API, bypassing browser/httpx.
 
@@ -144,6 +223,7 @@ async def _mediawiki_fast_path(
 
     return _process_markdown_sections(
         markdown_content, section_names, max_tokens, frontmatter_entries,
+        cache_url=cache_url,
     )
 
 
@@ -176,12 +256,21 @@ def _process_markdown_sections(
     section_names: Optional[list[str]],
     max_tokens: int,
     frontmatter_entries: dict,
+    cache_url: Optional[str] = None,
 ) -> str:
     """Apply section filtering, truncation, and frontmatter to markdown content.
 
     Common post-processing for both browser-rendered and httpx-fetched HTML.
     Returns the complete formatted output string.
+
+    When cache_url is provided, populates the page cache with the full
+    (pre-filtered) markdown so subsequent search/slices calls can use it.
     """
+    # Populate the page cache before any filtering/truncation
+    if cache_url and markdown_content:
+        title = frontmatter_entries.get("title", "Untitled")
+        _page_cache.store(cache_url, title, markdown_content)
+
     all_sections = _extract_sections_from_markdown(markdown_content)
     sections_requested_meta = None
     sections_available = None
@@ -209,3 +298,106 @@ def _process_markdown_sections(
         sections_available=sections_available,
     )
     return fm + "\n\n" + markdown_content
+
+
+# ---------------------------------------------------------------------------
+# Slice output, search, and retrieval
+# ---------------------------------------------------------------------------
+
+def _slice_output(
+    cache: _PageCache,
+    indices: list[int],
+    max_tokens: int,
+    fm_entries: dict,
+    search_term: Optional[str] = None,
+) -> str:
+    """Assemble sliced output with YAML frontmatter and --- dividers.
+
+    Each slice is preceded by a ``--- slice N (Ancestry) ---`` header.
+    Respects max_tokens budget — stops emitting slices when exhausted.
+    """
+    assert cache.slices is not None
+
+    fm_entries["total_slices"] = len(cache.slices)
+    if search_term is not None:
+        fm_entries["search"] = f'"{search_term}"'
+        fm_entries["matched_slices"] = indices
+        fm_entries["hint"] = "Use slices= to retrieve adjacent context by index"
+    else:
+        fm_entries["slices"] = indices
+
+    fm = _build_frontmatter(fm_entries)
+
+    char_budget = max_tokens * 4
+    parts: list[str] = []
+    used = 0
+    for idx in indices:
+        ancestry = cache.slice_ancestry[idx]
+        header = f"--- slice {idx} ({ancestry}) ---" if ancestry else f"--- slice {idx} ---"
+        content = cache.slices[idx]
+        needed = len(header) + 1 + len(content) + 2  # header + \n + content + \n\n
+        if used + needed > char_budget and parts:
+            remaining = len(indices) - len(parts)
+            parts.append(f"\n[{remaining} more slice(s) omitted — adjust max_tokens to see more]")
+            break
+        parts.append(f"{header}\n{content}")
+        used += needed
+
+    return fm + "\n\n" + "\n\n".join(parts)
+
+
+def _search_slices(
+    url: str,
+    search: str,
+    max_tokens: int,
+    fm_entries: dict,
+) -> Optional[str]:
+    """BM25 search over cached page slices.
+
+    Uses tantivy for language-aware tokenization and BM25 ranking.
+    Returns formatted output on cache hit, or None on cache miss.
+    """
+    cached = _page_cache.get(url)
+    if not cached or not cached.slices:
+        return None
+
+    matched = cached.search(search)
+
+    if not matched:
+        fm_entries["total_slices"] = len(cached.slices)
+        fm_entries["search"] = f'"{search}"'
+        fm_entries["matched_slices"] = "none"
+        fm = _build_frontmatter(fm_entries)
+        return fm + "\n\nNo matching slices found."
+
+    return _slice_output(cached, matched, max_tokens, fm_entries, search_term=search)
+
+
+def _get_slices(
+    url: str,
+    indices: list[int],
+    max_tokens: int,
+    fm_entries: dict,
+) -> Optional[str]:
+    """Retrieve specific slices by index from the page cache.
+
+    Returns formatted output on cache hit, or None on cache miss.
+    """
+    cached = _page_cache.get(url)
+    if not cached or not cached.slices:
+        return None
+
+    total = len(cached.slices)
+    valid = [i for i in indices if 0 <= i < total]
+    invalid = [i for i in indices if i < 0 or i >= total]
+
+    if not valid:
+        fm_entries["total_slices"] = total
+        fm_entries["slices_not_found"] = invalid
+        fm = _build_frontmatter(fm_entries)
+        return fm + f"\n\nNo valid slice indices. Total slices: {total} (0-{total - 1})."
+
+    if invalid:
+        fm_entries["slices_not_found"] = invalid
+
+    return _slice_output(cached, valid, max_tokens, fm_entries)

@@ -63,7 +63,11 @@ tree reveals document structure and scope at minimal cost. Reserve
 Returns markdown. Use the section parameter to extract specific sections by
 heading name. For Wikipedia/MediaWiki pages, inline footnotes appear as [^N]
 markers; use the footnotes parameter to retrieve specific entries by number.
-Supports HTML, plain text, JSON, and XML content types.""",
+Supports HTML, plain text, JSON, and XML content types.
+
+For long or poorly-sectioned pages, use search="terms" for BM25 keyword
+search over ~500-token slices (ranked by relevance, terms matched
+independently). Use slices=[3, 4, 5] to retrieve specific slices by index.""",
 
     "web_fetch_js": """Fetch and interact with web content using a headless browser.
 
@@ -99,9 +103,10 @@ handled automatically by {fetch} tools.
 
 Actions: search, paper, references, author_search, author, snippets.
 
-The snippets action searches within paper body text (~500-word excerpts
-tagged by section). Use paper_id to scope to a single paper, or omit for
-corpus-wide search. Example: action="snippets", query="multi-head attention",
+The snippets action does BM25 keyword search within paper body text
+(~500-word excerpts tagged by section, terms matched independently).
+Use paper_id to scope to a single paper, or omit for corpus-wide search.
+Example: action="snippets", query="multi-head attention",
 paper_id="204e3073870fae3d05bcbc2f6a8e263d9b72e776".""",
 }
 
@@ -117,6 +122,10 @@ specific sections by heading name. For Wikipedia/MediaWiki pages, inline
 footnotes appear as [^N] markers; use the footnotes parameter to retrieve
 specific entries by number.
 
+For long or poorly-sectioned pages, use search="terms" for BM25 keyword
+search over ~500-token slices (ranked by relevance, terms matched
+independently). Use slices=[3, 4, 5] to retrieve specific slices by index.
+
 Supports HTML, plain text, JSON, and XML content types.""",
         "desktop": """Fetch a URL directly from the local machine without JavaScript rendering.
 
@@ -128,6 +137,11 @@ PERMISSIONS_ERROR (URL not yet present in the conversation context).
 Returns markdown. Use the section parameter to extract specific sections by
 heading name. For Wikipedia/MediaWiki pages, inline footnotes appear as [^N]
 markers; use the footnotes parameter to retrieve specific entries by number.
+
+For long or poorly-sectioned pages, use search="terms" for BM25 keyword
+search over ~500-token slices (ranked by relevance, terms matched
+independently). Use slices=[3, 4, 5] to retrieve specific slices by index.
+
 Supports HTML, plain text, JSON, and XML content types.""",
     },
 }

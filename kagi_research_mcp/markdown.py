@@ -232,6 +232,67 @@ def _build_section_list(
     return lines
 
 
+def _compute_slice_ancestry(
+    sections: list[dict], chunk_offsets: list[int],
+) -> list[str]:
+    """Map each chunk's character offset to a section ancestry breadcrumb.
+
+    Returns one string per chunk, e.g. "Background > Historical Context (2/3)".
+    When consecutive chunks share the same innermost section, a positional
+    hint (N/M) is appended so the reader knows where they are within a large
+    section.  Single-slice sections get no hint.  Chunks before the first
+    heading produce an empty string.
+    """
+    if not chunk_offsets:
+        return []
+
+    # --- Step 1: find the innermost section index for each chunk ---
+    sec_indices: list[Optional[int]] = []
+    for offset in chunk_offsets:
+        found: Optional[int] = None
+        for si in range(len(sections) - 1, -1, -1):
+            if sections[si]["start_pos"] <= offset:
+                found = si
+                break
+        sec_indices.append(found)
+
+    # --- Step 2: build raw ancestry paths (without positional hints) ---
+    def _ancestry_path(sec_idx: Optional[int]) -> str:
+        if sec_idx is None:
+            return ""
+        parts = [sections[sec_idx]["name"]]
+        current = sec_idx
+        while True:
+            parent = _find_parent_idx(sections, current)
+            if parent is None:
+                break
+            parts.insert(0, sections[parent]["name"])
+            current = parent
+        return " > ".join(parts)
+
+    raw_paths = [_ancestry_path(si) for si in sec_indices]
+
+    # --- Step 3: group consecutive chunks sharing the same section ---
+    # Walk the list and identify runs of identical sec_indices.
+    # For runs longer than 1, append (pos/total) to each.
+    result = list(raw_paths)  # copy for mutation
+    i = 0
+    while i < len(sec_indices):
+        si = sec_indices[i]
+        # Find end of run
+        j = i + 1
+        while j < len(sec_indices) and sec_indices[j] == si:
+            j += 1
+        run_len = j - i
+        if run_len > 1 and si is not None:
+            for k in range(i, j):
+                pos = k - i + 1
+                result[k] = f"{raw_paths[k]} ({pos}/{run_len})"
+        i = j
+
+    return result
+
+
 def _filter_markdown_by_sections(
     markdown: str,
     section_names: list[str],

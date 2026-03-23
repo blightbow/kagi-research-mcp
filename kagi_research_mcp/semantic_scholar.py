@@ -373,11 +373,11 @@ async def semantic_scholar(
             "references: list papers cited by a paper. "
             "author_search: find authors by name. "
             "author: get author details and top papers by author ID. "
-            "snippets: search within paper body text (~500-word excerpts by section)."
+            "snippets: BM25 keyword search within paper body text (~500-word excerpts by section, terms matched independently)."
         ),
     )],
     query: Annotated[str, Field(
-        description="Search terms (search/snippets), paper ID or DOI/ARXIV/PMID prefix (paper/references), or author ID/name (author/author_search).",
+        description="Search terms for BM25 keyword matching (search/snippets), paper ID or DOI/ARXIV/PMID prefix (paper/references), or author ID/name (author/author_search).",
     )],
     limit: Annotated[int, Field(
         description="Maximum results to return (default 10, max 100 for most actions, max 1000 for snippets).",
