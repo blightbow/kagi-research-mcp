@@ -523,7 +523,12 @@ The search and slicing workflow mirrors the SemanticScholar `snippets` action â€
 
 #### Claude Code
 
-Add to your `.mcp.json`:
+Install globally via CLI:
+```
+claude mcp add kagi-research-mcp -- uv --directory /path/to/kagi-research-mcp run kagi-research-mcp --profile code
+```
+
+Or add it directly to your project's `.mcp.json`:
 
 ```json
 {
