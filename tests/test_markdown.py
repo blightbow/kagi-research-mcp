@@ -532,6 +532,19 @@ class TestBuildFrontmatter:
         fm = _build_frontmatter({"title": "T"}, sections_not_found=None)
         assert "sections_not_found" not in fm
 
+    def test_list_value_single_item(self):
+        """Single-item list should render as a scalar."""
+        fm = _build_frontmatter({"title": "T", "warning": ["one warning"]})
+        assert "warning: one warning" in fm
+        assert "  -" not in fm.split("sections")[0]  # no list markers
+
+    def test_list_value_multiple_items(self):
+        """Multi-item list should render as a YAML list."""
+        fm = _build_frontmatter({"title": "T", "warning": ["first", "second"]})
+        assert "warning:" in fm
+        assert "  - first" in fm
+        assert "  - second" in fm
+
     def test_no_sections(self):
         fm = _build_frontmatter({"title": "T"})
         assert "sections:" not in fm

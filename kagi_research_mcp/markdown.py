@@ -423,7 +423,16 @@ def _build_frontmatter(
     """
     lines = ["---"]
     for key, value in entries.items():
-        if value is not None:
+        if value is None:
+            continue
+        if isinstance(value, list):
+            if len(value) == 1:
+                lines.append(f"{key}: {value[0]}")
+            else:
+                lines.append(f"{key}:")
+                for item in value:
+                    lines.append(f"  - {item}")
+        else:
             lines.append(f"{key}: {value}")
 
     if sections_requested:
