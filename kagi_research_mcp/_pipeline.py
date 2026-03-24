@@ -16,7 +16,7 @@ from .markdown import (
     _build_section_list,
     _filter_markdown_by_sections,
     _build_frontmatter,
-    _apply_truncation,
+    _apply_semantic_truncation,
     _compute_slice_ancestry,
 )
 from .mediawiki import _detect_mediawiki, _fetch_mediawiki_page, _mediawiki_html_to_markdown
@@ -70,7 +70,7 @@ class _PageCache:
     """Single-entry cache for sliced page content with BM25 search index."""
 
     __slots__ = ("url", "title", "markdown", "slices", "slice_ancestry",
-                 "_tantivy_index")
+                 "_tantivy_index", "renderer")
 
     _SPLITTER = MarkdownSplitter((1600, 2000))
 
@@ -93,18 +93,27 @@ class _PageCache:
         self.slices: Optional[list[str]] = None
         self.slice_ancestry: Optional[list[str]] = None
         self._tantivy_index = None
+        self.renderer: Optional[str] = None  # "direct" or "js"
 
-    def get(self, url: str):
-        """Return self if url matches (access .slices, .title, etc.), else None."""
+    def get(self, url: str, renderer: Optional[str] = None):
+        """Return self if url matches, else None.
+
+        When renderer is specified, only returns a hit if the cached entry
+        was produced by the same renderer.  This prevents WebFetchJS from
+        reusing sparse content that WebFetchDirect cached from a JS-heavy page.
+        """
         if self.url == url:
+            if renderer is not None and self.renderer != renderer:
+                return None
             return self
         return None
 
-    def store(self, url: str, title: str, markdown: str):
+    def store(self, url: str, title: str, markdown: str, renderer: Optional[str] = None):
         """Slice markdown, build BM25 index, and cache results."""
         self.url = url
         self.title = title
         self.markdown = markdown
+        self.renderer = renderer
         chunks = self._SPLITTER.chunk_indices(markdown)
         self.slices = [text for _, text in chunks]
         offsets = [offset for offset, _ in chunks]
@@ -224,7 +233,7 @@ async def _mediawiki_fast_path(
 
     return _process_markdown_sections(
         markdown_content, section_names, max_tokens, frontmatter_entries,
-        cache_url=cache_url,
+        cache_url=cache_url, renderer="wiki",
     )
 
 
@@ -281,6 +290,7 @@ def _process_markdown_sections(
     max_tokens: int,
     frontmatter_entries: dict,
     cache_url: Optional[str] = None,
+    renderer: Optional[str] = None,
 ) -> str:
     """Apply section filtering, truncation, and frontmatter to markdown content.
 
@@ -289,11 +299,13 @@ def _process_markdown_sections(
 
     When cache_url is provided, populates the page cache with the full
     (pre-filtered) markdown so subsequent search/slices calls can use it.
+    The renderer tag ("direct" or "js") is stored with the cache entry so
+    that WebFetchJS won't reuse sparse content cached by WebFetchDirect.
     """
     # Populate the page cache before any filtering/truncation
     if cache_url and markdown_content:
         title = frontmatter_entries.get("title", "Untitled")
-        _page_cache.store(cache_url, title, markdown_content)
+        _page_cache.store(cache_url, title, markdown_content, renderer=renderer)
 
     all_sections = _extract_sections_from_markdown(markdown_content)
     sections_requested_meta = None
@@ -316,7 +328,7 @@ def _process_markdown_sections(
                 "Subsections are separate entries — request them by name to include them."
             )
 
-    markdown_content, truncation_hint = _apply_truncation(markdown_content, max_tokens)
+    markdown_content, truncation_hint = _apply_semantic_truncation(markdown_content, max_tokens)
     if truncation_hint and all_sections and not section_names:
         sections_available = _build_section_list(all_sections)
 
@@ -433,3 +445,25 @@ def _get_slices(
         fm_entries["slices_not_found"] = invalid
 
     return _slice_output(cached, valid, max_tokens, fm_entries)
+
+
+def _dispatch_slicing(
+    url: str,
+    search: Optional[str],
+    slices,
+    slices_list: list[int],
+    max_tokens: int,
+    source_url: str,
+    warning=None,
+) -> str:
+    """Dispatch to search or slice retrieval after cache has been populated."""
+    cached = _page_cache.get(url)
+    if not cached:
+        return "Error: Page cache could not be populated for this URL."
+    fm_base = {"title": cached.title, "source": source_url, "warning": warning}
+    if search is not None:
+        return _search_slices(url, search, max_tokens, fm_base) or \
+            "Error: Page cache unavailable."
+    else:
+        return _get_slices(url, slices_list, max_tokens, fm_base) or \
+            "Error: Page cache unavailable."

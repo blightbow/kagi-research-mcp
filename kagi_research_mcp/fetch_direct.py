@@ -8,7 +8,7 @@ import httpx
 from .common import _FETCH_HEADERS
 from .markdown import (
     html_to_markdown, _extract_sections_from_markdown, _build_section_list,
-    _filter_markdown_by_sections, _build_frontmatter, _apply_truncation,
+    _filter_markdown_by_sections, _build_frontmatter, _apply_hard_truncation,
 )
 from ._pipeline import (
     _extract_fragment, _normalize_sections, _resolve_fragment_source,
@@ -16,6 +16,7 @@ from ._pipeline import (
     _process_markdown_sections,
     _cached_mediawiki_fetch,
     _page_cache, _search_slices, _get_slices,
+    _dispatch_slicing,
 )
 from .mediawiki import _mediawiki_html_to_markdown, _extract_citations, _format_citations
 
@@ -90,10 +91,12 @@ async def web_fetch_direct(
         footnotes = None
 
     # --- Search/slices cache-first path ---
+    # Only reuse "direct" or "wiki" entries.  A "js" entry was produced by
+    # Playwright and should not be served from a tool that does static HTTP.
     if want_slicing:
         fm_base = {"source": source_url, "warning": fragment_warning}
         cached = _page_cache.get(url)
-        if cached:
+        if cached and cached.renderer in ("direct", "wiki"):
             fm_base["title"] = cached.title or "Untitled"
             if search is not None:
                 return _search_slices(url, search, max_tokens, fm_base) or \
@@ -216,7 +219,7 @@ async def web_fetch_direct(
         title = url.rsplit("/", 1)[-1] or "Untitled"
         ct_label = "json" if is_json else ("xml" if is_xml else "plain text")
 
-        text, truncation_hint = _apply_truncation(
+        text, truncation_hint = _apply_hard_truncation(
             text, max_tokens,
             hint_prefix="Full content",
             hint_suffix="Use max_tokens to adjust.",
@@ -240,7 +243,7 @@ async def web_fetch_direct(
     output = _process_markdown_sections(
         markdown_content, section_names, max_tokens,
         {"title": title, "source": source_url, "warning": fragment_warning},
-        cache_url=url,
+        cache_url=url, renderer="direct",
     )
 
     # If search/slices was requested, the cache is now populated — dispatch
@@ -249,28 +252,6 @@ async def web_fetch_direct(
                                  max_tokens, source_url, warning=fragment_warning)
 
     return output
-
-
-def _dispatch_slicing(
-    url: str,
-    search: Optional[str],
-    slices: Optional[Union[int, list[int]]],
-    slices_list: list[int],
-    max_tokens: int,
-    source_url: str,
-    warning: Union[str, list[str], None] = None,
-) -> str:
-    """Dispatch to search or slice retrieval after cache has been populated."""
-    cached = _page_cache.get(url)
-    if not cached:
-        return "Error: Page cache could not be populated for this URL."
-    fm_base = {"title": cached.title, "source": source_url, "warning": warning}
-    if search is not None:
-        return _search_slices(url, search, max_tokens, fm_base) or \
-            "Error: Page cache unavailable."
-    else:
-        return _get_slices(url, slices_list, max_tokens, fm_base) or \
-            "Error: Page cache unavailable."
 
 
 async def web_fetch_sections(url: str) -> str:

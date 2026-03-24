@@ -89,14 +89,16 @@ def html_to_markdown(html: str) -> tuple[str, str]:
 
 # --- Truncation helper ---
 
-def _apply_truncation(
+def _apply_hard_truncation(
     content: str,
     max_tokens: int,
     hint_prefix: str = "Full page",
-    hint_suffix: str = "Use max_tokens to adjust, section to fetch specific sections, "
-                       "or kagi_summarize for a summary.",
+    hint_suffix: str = "Use max_tokens to adjust.",
 ) -> tuple[str, Optional[str]]:
-    """Apply token-limit truncation to content.
+    """Apply token-limit truncation with a hard character cut.
+
+    Best for non-markdown content (JSON, XML, plain text) where semantic
+    boundaries are not meaningful.
 
     Returns (possibly_truncated_content, truncation_hint_or_none).
     """
@@ -110,6 +112,42 @@ def _apply_truncation(
     hint = (
         f"{hint_prefix} is {total_kb:.1f} KB (~{total_tokens_est:,} tokens), "
         f"showing first ~{max_tokens:,} tokens. {hint_suffix}"
+    )
+    return truncated, hint
+
+
+def _apply_semantic_truncation(
+    content: str,
+    max_tokens: int,
+) -> tuple[str, Optional[str]]:
+    """Apply token-limit truncation at a semantic boundary.
+
+    Uses MarkdownSplitter to find a clean break point (heading, paragraph
+    boundary) rather than cutting mid-sentence.  Best for markdown content.
+
+    Returns (possibly_truncated_content, truncation_hint_or_none).
+    """
+    from semantic_text_splitter import MarkdownSplitter
+
+    char_limit = max_tokens * 4
+    if len(content) <= char_limit:
+        return content, None
+
+    splitter = MarkdownSplitter(char_limit)
+    chunks = splitter.chunks(content)
+
+    if len(chunks) <= 1:
+        return content, None
+
+    truncated = chunks[0] + "\n\n[content truncated]"
+    shown_tokens = len(chunks[0]) // 4
+    total_kb = len(content) / 1024
+    total_tokens_est = len(content) // 4
+    hint = (
+        f"Full page is {total_kb:.1f} KB (~{total_tokens_est:,} tokens), "
+        f"showing first ~{shown_tokens:,} tokens. "
+        "Use max_tokens to adjust, section to fetch specific sections, "
+        "or kagi_summarize for a summary."
     )
     return truncated, hint
 

@@ -10,6 +10,8 @@ from kagi_research_mcp.markdown import (
     _build_section_list,
     _filter_markdown_by_sections,
     _build_frontmatter,
+    _apply_hard_truncation,
+    _apply_semantic_truncation,
 )
 
 from .conftest import SAMPLE_MARKDOWN, SAMPLE_MARKDOWN_WITH_DUPLICATES
@@ -601,3 +603,53 @@ class TestBuildFrontmatter:
             '  - "nonexistent-fragment"',
             "---",
         ])
+
+
+class TestApplyHardTruncation:
+    def test_short_content_unchanged(self):
+        content = "Short text."
+        result, hint = _apply_hard_truncation(content, 100)
+        assert result == content
+        assert hint is None
+
+    def test_long_content_truncated(self):
+        content = "x" * 5000
+        result, hint = _apply_hard_truncation(content, 100)
+        assert len(result) < len(content)
+        assert "[content truncated]" in result
+        assert hint is not None
+        assert "tokens" in hint
+
+
+class TestApplySemanticTruncation:
+    def test_short_content_unchanged(self):
+        content = "Short markdown text."
+        result, hint = _apply_semantic_truncation(content, 100)
+        assert result == content
+        assert hint is None
+
+    def test_long_markdown_truncates(self):
+        """Semantic truncation should produce truncated output with marker and hint."""
+        sections = []
+        for i in range(20):
+            words = " ".join(f"word{j}" for j in range(100))
+            sections.append(f"## Section {i}\n\n{words}.")
+        content = "\n\n".join(sections)
+
+        result, hint = _apply_semantic_truncation(content, 200)
+        assert "[content truncated]" in result
+        assert hint is not None
+        assert "tokens" in hint
+        # Output should be shorter than the original
+        assert len(result) < len(content)
+
+    def test_hint_includes_actual_shown_tokens(self):
+        """Hint should reflect the actual content shown, not max_tokens."""
+        paragraphs = [f"## Section {i}\n\n{'Word ' * 200}" for i in range(20)]
+        content = "\n\n".join(paragraphs)
+
+        result, hint = _apply_semantic_truncation(content, 500)
+        assert hint is not None
+        # The hint should mention the actual shown amount
+        assert "showing first" in hint
+        assert "Full page is" in hint

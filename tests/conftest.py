@@ -104,6 +104,25 @@ MEDIAWIKI_PARSE_FULL_RESPONSE = {
     }
 }
 
+MEDIAWIKI_PARSE_WITH_CITATIONS = {
+    "parse": {
+        "displaytitle": "Test Page",
+        "text": {
+            "*": '<h2>Section One</h2><p>Content of section one.[^1]</p>'
+                 '<h2>References</h2>'
+                 '<ol class="references">'
+                 '<li><span class="reference-text">First reference source.</span></li>'
+                 '<li><span class="reference-text">Second reference source.</span></li>'
+                 '<li><span class="reference-text">Third reference source.</span></li>'
+                 '</ol>'
+        },
+        "sections": [
+            {"index": "1", "line": "Section One", "level": "2"},
+            {"index": "2", "line": "References", "level": "2"},
+        ],
+    }
+}
+
 MEDIAWIKI_PARSE_SECTIONS_RESPONSE = {
     "parse": {
         "displaytitle": "Test Page",
