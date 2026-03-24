@@ -31,6 +31,7 @@ def clear_caches():
     _page_cache.markdown = None
     _page_cache.slices = None
     _page_cache.slice_ancestry = None
+    _page_cache.renderer = None
 
 
 # --- web_fetch_direct ---

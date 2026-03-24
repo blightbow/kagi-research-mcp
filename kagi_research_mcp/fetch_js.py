@@ -5,15 +5,19 @@ import os
 from pathlib import Path
 from typing import Optional, Union
 
+import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
 from .common import _FETCH_HEADERS
-from .markdown import html_to_markdown
+from .markdown import html_to_markdown, _build_frontmatter, _apply_hard_truncation
+from .mediawiki import _extract_citations, _format_citations
 from ._pipeline import (
     _extract_fragment, _normalize_sections, _resolve_fragment_source,
     _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path,
     _process_markdown_sections,
+    _cached_mediawiki_fetch,
+    _page_cache, _dispatch_slicing,
 )
 
 logger = logging.getLogger(__name__)
@@ -232,6 +236,9 @@ async def web_fetch_js(
     max_elements: int = 25,
     max_tokens: int = 5000,
     section: Optional[Union[str, list[str]]] = None,
+    footnotes: Optional[Union[int, list[int]]] = None,
+    search: Optional[str] = None,
+    slices: Optional[Union[int, list[int]]] = None,
 ) -> str:
     """Fetch web content with full JavaScript rendering and optional interactions.
 
@@ -246,6 +253,9 @@ async def web_fetch_js(
         max_elements: Maximum number of interactive elements to extract (default 25)
         max_tokens: Limit on output length in approximate token count (default 5000)
         section: Section name or list of section names to extract from the page
+        footnotes: Footnote number or list of numbers to retrieve from the page
+        search: Search terms for BM25 keyword matching within cached page content
+        slices: Slice index or list of indices to retrieve from cached page content
     """
     # Extract fragment from URL (e.g. #section-name) as implicit section request
     url, fragment = _extract_fragment(url)
@@ -253,6 +263,72 @@ async def web_fetch_js(
     if fragment and not section_names:
         section_names = [fragment]
     source_url, fragment_warning = _resolve_fragment_source(url, fragment, section)
+
+    # --- Parameter validation ---
+    if search is not None and search == "":
+        search = None
+    slices_list: list[int] = []
+    if slices is not None:
+        slices_list = [slices] if isinstance(slices, int) else list(slices)
+        if not slices_list:
+            slices = None
+    want_slicing = search is not None or slices is not None
+
+    if search is not None and slices is not None:
+        return "Error: 'search' and 'slices' are mutually exclusive."
+    if want_slicing and section_names:
+        return "Error: 'search'/'slices' and 'section' are mutually exclusive."
+
+    if footnotes is not None and (want_slicing or section_names):
+        _fn_warn = (
+            "footnotes parameter ignored — use footnotes as the sole parameter "
+            "to retrieve bibliography entries"
+        )
+        if fragment_warning:
+            fragment_warning = [fragment_warning, _fn_warn]
+        else:
+            fragment_warning = _fn_warn
+        footnotes = None
+
+    # --- Search/slices cache-first path ---
+    # Skip cache entries produced by WebFetchDirect ("direct") — its static
+    # HTML may be sparse for JS-heavy pages.  Entries from "js" (Playwright)
+    # or "wiki" (MediaWiki API, identical regardless of calling tool) are safe.
+    if want_slicing:
+        cached = _page_cache.get(url)
+        if cached and cached.renderer in ("js", "wiki"):
+            return _dispatch_slicing(
+                url, search, slices, slices_list if slices is not None else [],
+                max_tokens, source_url, warning=fragment_warning,
+            )
+
+    # --- Footnote-only path (MediaWiki pages) ---
+    if footnotes is not None:
+        requested = [footnotes] if isinstance(footnotes, int) else list(footnotes)
+        try:
+            wiki_info, wiki_page = await _cached_mediawiki_fetch(url)
+            if wiki_info and wiki_page:
+                all_footnotes = _extract_citations(wiki_page["html"])
+                if not all_footnotes:
+                    return f"Error: No footnotes found for {url}"
+                selected = [c for c in all_footnotes if c["n"] in requested]
+                not_found = sorted(set(requested) - {c["n"] for c in selected})
+                fm_entries = {
+                    "title": wiki_page["title"],
+                    "source": source_url,
+                    "footnotes_only": True,
+                }
+                if not_found:
+                    available = sorted(c["n"] for c in all_footnotes)
+                    fm_entries["footnotes_not_found"] = not_found
+                    fm_entries["footnotes_available"] = f"1-{available[-1]}"
+                fm = _build_frontmatter(fm_entries)
+                if selected:
+                    return fm + "\n\n" + _format_citations(selected)
+                return fm
+        except Exception:
+            pass
+        return f"Error: Footnote retrieval requires a MediaWiki page (Wikipedia, etc.)"
 
     # --- arXiv fast path (before launching browser) ---
     try:
@@ -275,11 +351,58 @@ async def web_fetch_js(
         result = await _mediawiki_fast_path(
             url, section_names, max_tokens,
             extra_entries={"source": source_url, "warning": fragment_warning},
+            cache_url=url,
         )
         if result is not None:
+            if want_slicing:
+                return _dispatch_slicing(
+                    url, search, slices, slices_list if slices is not None else [],
+                    max_tokens, source_url, warning=fragment_warning,
+                )
             return result
     except Exception:
         pass  # Fall through to browser path
+
+    # --- Content-type pre-check (skip browser for non-HTML) ---
+    if not actions and not wait_for:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                head_resp = await client.head(url, headers=_FETCH_HEADERS)
+                head_resp.raise_for_status()
+                ct = head_resp.headers.get("content-type", "")
+                is_html = "text/html" in ct or "application/xhtml" in ct
+                is_plain = "text/plain" in ct
+                is_json = "application/json" in ct or "text/json" in ct
+                is_xml = ("application/xml" in ct or "text/xml" in ct) and not is_html
+
+                if not is_html and any([is_plain, is_json, is_xml]):
+                    get_resp = await client.get(url, headers=_FETCH_HEADERS)
+                    get_resp.raise_for_status()
+                    text = get_resp.text.strip()
+                    if not text:
+                        return f"Error: No content extracted from {url}"
+
+                    title = url.rsplit("/", 1)[-1] or "Untitled"
+                    ct_label = "json" if is_json else ("xml" if is_xml else "plain text")
+                    skip_warning = f"Content-type is {ct_label}; JavaScript rendering was skipped"
+
+                    text, truncation_hint = _apply_hard_truncation(
+                        text, max_tokens,
+                        hint_prefix="Full content",
+                        hint_suffix="Use max_tokens to adjust.",
+                    )
+
+                    warnings = [skip_warning, fragment_warning] if fragment_warning else skip_warning
+                    fm = _build_frontmatter({
+                        "title": title,
+                        "source": source_url,
+                        "warning": warnings,
+                        "content_type": ct_label,
+                        "truncated": truncation_hint,
+                    })
+                    return fm + "\n\n" + text
+        except Exception:
+            pass  # HEAD failed or ambiguous — fall through to Playwright
 
     # --- Browser path ---
     detected_app = None  # Track if we detected a live app framework
@@ -418,8 +541,15 @@ async def web_fetch_js(
     }
     output = _process_markdown_sections(
         markdown_content, section_names, max_tokens, frontmatter_entries,
-        cache_url=url,
+        cache_url=url, renderer="js",
     )
+
+    # If search/slices was requested, cache is now populated — dispatch
+    if want_slicing:
+        return _dispatch_slicing(
+            url, search, slices, slices_list if slices is not None else [],
+            max_tokens, source_url, warning=fragment_warning,
+        )
 
     if interactive_elements:
         output += "\n---\n"

@@ -77,6 +77,12 @@ Use this when {fetch} returns incomplete content from JavaScript-heavy sites
 (SPAs, React/Vue/Angular apps, dynamically loaded content). Use the section
 parameter to extract specific sections by heading name.
 
+For long or poorly-sectioned pages, use search="terms" for BM25 keyword
+search over ~500-token slices (ranked by relevance, terms matched
+independently). Use slices=[3, 4, 5] to retrieve specific slices by index.
+For Wikipedia/MediaWiki pages, inline footnotes appear as [^N] markers; use
+the footnotes parameter to retrieve specific entries by number.
+
 Supports ReAct-style interaction chains:
 1. First call: Fetch page, observe available interactive elements
 2. Subsequent calls: Use 'actions' parameter to interact (click, fill, select)
