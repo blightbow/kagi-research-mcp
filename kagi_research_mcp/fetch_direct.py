@@ -74,12 +74,24 @@ async def web_fetch_direct(
         return "Error: 'search' and 'slices' are mutually exclusive."
     if want_slicing and section_names:
         return "Error: 'search'/'slices' and 'section' are mutually exclusive."
-    if want_slicing and footnotes is not None:
-        return "Error: 'search'/'slices' and 'footnotes' are mutually exclusive."
+
+    # Footnotes are a companion ask — when combined with another mode,
+    # honor the primary intent and warn that footnotes were ignored.
+    # Footnotes-only mode is for when you specifically want bibliography entries.
+    if footnotes is not None and (want_slicing or section_names):
+        _fn_warn = (
+            "footnotes parameter ignored — use footnotes as the sole parameter "
+            "to retrieve bibliography entries"
+        )
+        if fragment_warning:
+            fragment_warning = [fragment_warning, _fn_warn]
+        else:
+            fragment_warning = _fn_warn
+        footnotes = None
 
     # --- Search/slices cache-first path ---
     if want_slicing:
-        fm_base = {"source": source_url}
+        fm_base = {"source": source_url, "warning": fragment_warning}
         cached = _page_cache.get(url)
         if cached:
             fm_base["title"] = cached.title or "Untitled"
@@ -161,7 +173,7 @@ async def web_fetch_direct(
         if result is not None:
             if want_slicing:
                 return _dispatch_slicing(url, search, slices, slices_list if slices is not None else [],
-                                         max_tokens, source_url)
+                                         max_tokens, source_url, warning=fragment_warning)
             return result
     except Exception:
         pass  # Fall through to HTTP fetch
@@ -234,7 +246,7 @@ async def web_fetch_direct(
     # If search/slices was requested, the cache is now populated — dispatch
     if want_slicing:
         return _dispatch_slicing(url, search, slices, slices_list if slices is not None else [],
-                                 max_tokens, source_url)
+                                 max_tokens, source_url, warning=fragment_warning)
 
     return output
 
@@ -246,12 +258,13 @@ def _dispatch_slicing(
     slices_list: list[int],
     max_tokens: int,
     source_url: str,
+    warning: Union[str, list[str], None] = None,
 ) -> str:
     """Dispatch to search or slice retrieval after cache has been populated."""
     cached = _page_cache.get(url)
     if not cached:
         return "Error: Page cache could not be populated for this URL."
-    fm_base = {"title": cached.title, "source": source_url}
+    fm_base = {"title": cached.title, "source": source_url, "warning": warning}
     if search is not None:
         return _search_slices(url, search, max_tokens, fm_base) or \
             "Error: Page cache unavailable."
@@ -349,7 +362,11 @@ def _sections_response(
         fm = _build_frontmatter({"title": title, "source": url})
         return fm + "\n\nNo sections found."
 
-    entries = {"title": title, "source": url}
+    entries = {
+        "title": title,
+        "source": url,
+        "hint": "Use WebFetchDirect with section parameter to extract specific sections by name",
+    }
     sections_available = _build_section_list(all_sections, include_slugs=True)
     sections_not_found = None
 

@@ -220,6 +220,31 @@ class TestWebFetchDirectErrors:
         assert "ConnectError" in result
 
 
+class TestWebFetchDirectParameterDowngrade:
+    """Tests for soft parameter downgrades instead of hard errors."""
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_section_plus_footnotes_ignores_footnotes(self):
+        """section + footnotes should honor section and warn about footnotes."""
+        respx.get("https://example.com/page").mock(
+            return_value=httpx.Response(
+                200,
+                text=SAMPLE_HTML_PAGE,
+                headers={"content-type": "text/html"},
+            )
+        )
+        result = await web_fetch_direct(
+            "https://example.com/page", section="Second Section", footnotes=[1, 2]
+        )
+        # Section extraction should succeed
+        assert "section:" in result
+        assert "Second Section" in result
+        # Footnotes warning should appear in frontmatter
+        assert "warning:" in result
+        assert "footnotes parameter ignored" in result
+
+
 class TestWebFetchDirectMediawikiFastPath:
     @pytest.mark.asyncio
     @respx.mock
@@ -391,6 +416,8 @@ class TestWebFetchSections:
         assert "(#main-heading)" in result
         assert "(#second-section)" in result
         assert "(#subsection)" in result
+        assert "hint:" in result
+        assert "section parameter" in result
         # Should NOT contain page content
         assert "paragraph" not in result
 

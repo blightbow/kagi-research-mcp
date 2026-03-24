@@ -37,6 +37,36 @@ Three distinct fields carry guidance.  Use the right one:
 `_build_frontmatter()` skips `None` values, so hints that only apply
 conditionally can be passed as `None` and will be omitted cleanly.
 
+## List Values
+
+Any frontmatter field can be a list.  `_build_frontmatter()` renders
+single-item lists as scalars and multi-item lists as YAML sequences:
+
+```yaml
+# Single item — rendered as scalar
+warning: HTML full text is not available for this paper
+
+# Multiple items — rendered as list
+warning:
+  - Fragment could not be resolved
+  - footnotes parameter ignored — use footnotes as the sole parameter to retrieve bibliography entries
+```
+
+## Parameter Conflicts
+
+When incompatible parameters are combined, the tool picks the
+strongest signal and warns about ignored parameters rather than
+rejecting the request outright.  This avoids wasting a round-trip.
+
+- `section` + `footnotes`: section extraction runs; footnotes ignored
+  with warning
+- `search`/`slices` + `footnotes`: search/slices runs; footnotes
+  ignored with warning
+- `search` + `slices`: mutually exclusive (hard error — no clear
+  winner)
+- `search`/`slices` + `section`: mutually exclusive (hard error —
+  fundamentally different modes)
+
 ## Required Fields by Tool
 
 ### Fetch tools (`web_fetch_direct`, `web_fetch_sections`, `web_fetch_js`)
@@ -56,13 +86,13 @@ Conditional:
 | `generator`        | MediaWiki pages |
 | `content_type`     | Non-HTML content (json, xml, plain) |
 | `truncated`        | Content exceeds `max_tokens` |
-| `warning`          | Fragment could not be resolved, or other advisory |
+| `warning`          | Fragment could not be resolved, parameter conflicts, or other advisory |
 | `footnotes_only`   | Footnote-only responses |
 | `total_slices`     | BM25 search or slice retrieval |
 | `search`           | BM25 search query |
 | `matched_slices`   | BM25 search results |
 | `slices`           | Slice retrieval indices |
-| `hint`             | BM25 search and slice retrieval |
+| `hint`             | BM25 search, slice retrieval, and `web_fetch_sections` |
 | `note`             | Section extraction depth warning (when subsections exist) |
 | `sections:`        | Section tree (truncation or `web_fetch_sections`) |
 | `section:`         | Single-section extraction |

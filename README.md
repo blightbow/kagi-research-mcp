@@ -26,6 +26,7 @@ This MCP server implements a different approach that is grounded in targeted tex
 ---
 title: User-Agent header
 source: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/User-Agent
+hint: Use WebFetchDirect with section parameter to extract specific sections by name
 sections:
   - User-Agent header (#user-agent-header)
     - Syntax (#syntax)
