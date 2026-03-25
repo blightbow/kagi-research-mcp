@@ -29,6 +29,7 @@ class CitationRecord:
     authors: list[str] = field(default_factory=list)   # ["Last, First", ...]
     year: Optional[int] = None
     venue: Optional[str] = None
+    arxiv_version: Optional[str] = None          # e.g. "v7" — the specific arXiv revision inspected
     source_tool: Optional[str] = None           # "arxiv", "semantic_scholar", "doi"
     bibtex: Optional[str] = None
     citation_apa: Optional[str] = None
