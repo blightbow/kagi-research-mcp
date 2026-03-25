@@ -53,19 +53,21 @@ def sample_record_2():
 # ---------------------------------------------------------------------------
 
 class TestShelfCrud:
-    def test_track_and_list(self, shelf, sample_record):
-        shelf.track(sample_record)
-        records = shelf.list_all()
+    @pytest.mark.asyncio
+    async def test_track_and_list(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        records = await shelf.list_all()
         assert len(records) == 1
         assert records[0].doi == "10.48550/arXiv.1706.03762"
         assert records[0].title == "Attention Is All You Need"
         assert records[0].added is not None
 
-    def test_track_upsert_preserves_user_fields(self, shelf, sample_record):
-        shelf.track(sample_record)
-        shelf.set_score(sample_record.doi, 8)
-        shelf.confirm(sample_record.doi)
-        shelf.set_note(sample_record.doi, "Seminal transformer paper")
+    @pytest.mark.asyncio
+    async def test_track_upsert_preserves_user_fields(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        await shelf.set_score(sample_record.doi, 8)
+        await shelf.confirm(sample_record.doi)
+        await shelf.set_note(sample_record.doi, "Seminal transformer paper")
 
         # Re-track with updated metadata
         updated = CitationRecord(
@@ -74,63 +76,73 @@ class TestShelfCrud:
             authors=["Vaswani, Ashish"],
             source_tool="arxiv",
         )
-        shelf.track(updated)
+        await shelf.track(updated)
 
-        records = shelf.list_all()
+        records = await shelf.list_all()
         assert len(records) == 1
         assert records[0].title == "Attention Is All You Need (v2)"
         assert records[0].score == 8
         assert records[0].confirmed is True
         assert records[0].notes == "Seminal transformer paper"
 
-    def test_remove_single(self, shelf, sample_record):
-        shelf.track(sample_record)
-        removed = shelf.remove([sample_record.doi])
+    @pytest.mark.asyncio
+    async def test_remove_single(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        removed = await shelf.remove([sample_record.doi])
         assert removed == [sample_record.doi]
-        assert shelf.list_all() == []
+        assert await shelf.list_all() == []
 
-    def test_remove_batch(self, shelf, sample_record, sample_record_2):
-        shelf.track(sample_record)
-        shelf.track(sample_record_2)
-        removed = shelf.remove([sample_record.doi, sample_record_2.doi])
+    @pytest.mark.asyncio
+    async def test_remove_batch(self, shelf, sample_record, sample_record_2):
+        await shelf.track(sample_record)
+        await shelf.track(sample_record_2)
+        removed = await shelf.remove([sample_record.doi, sample_record_2.doi])
         assert len(removed) == 2
-        assert shelf.list_all() == []
+        assert await shelf.list_all() == []
 
-    def test_remove_nonexistent(self, shelf):
-        removed = shelf.remove(["10.9999/fake"])
+    @pytest.mark.asyncio
+    async def test_remove_nonexistent(self, shelf):
+        removed = await shelf.remove(["10.9999/fake"])
         assert removed == []
 
-    def test_score(self, shelf, sample_record):
-        shelf.track(sample_record)
-        assert shelf.set_score(sample_record.doi, 9)
-        assert shelf.list_all()[0].score == 9
+    @pytest.mark.asyncio
+    async def test_score(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        assert await shelf.set_score(sample_record.doi, 9)
+        assert (await shelf.list_all())[0].score == 9
 
-    def test_score_nonexistent(self, shelf):
-        assert shelf.set_score("10.9999/fake", 5) is False
+    @pytest.mark.asyncio
+    async def test_score_nonexistent(self, shelf):
+        assert await shelf.set_score("10.9999/fake", 5) is False
 
-    def test_confirm(self, shelf, sample_record):
-        shelf.track(sample_record)
-        assert shelf.confirm(sample_record.doi)
-        assert shelf.list_all()[0].confirmed is True
+    @pytest.mark.asyncio
+    async def test_confirm(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        assert await shelf.confirm(sample_record.doi)
+        assert (await shelf.list_all())[0].confirmed is True
 
-    def test_note(self, shelf, sample_record):
-        shelf.track(sample_record)
-        assert shelf.set_note(sample_record.doi, "Important paper")
-        assert shelf.list_all()[0].notes == "Important paper"
+    @pytest.mark.asyncio
+    async def test_note(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        assert await shelf.set_note(sample_record.doi, "Important paper")
+        assert (await shelf.list_all())[0].notes == "Important paper"
 
-    def test_clear(self, shelf, sample_record, sample_record_2):
-        shelf.track(sample_record)
-        shelf.track(sample_record_2)
-        count = shelf.clear()
+    @pytest.mark.asyncio
+    async def test_clear(self, shelf, sample_record, sample_record_2):
+        await shelf.track(sample_record)
+        await shelf.track(sample_record_2)
+        count = await shelf.clear()
         assert count == 2
-        assert shelf.list_all() == []
+        assert await shelf.list_all() == []
 
-    def test_count_and_confirmed_count(self, shelf, sample_record, sample_record_2):
-        shelf.track(sample_record)
-        shelf.track(sample_record_2)
-        shelf.confirm(sample_record.doi)
-        assert shelf.count() == 2
-        assert shelf.confirmed_count() == 1
+    @pytest.mark.asyncio
+    async def test_count_and_confirmed_count(self, shelf, sample_record, sample_record_2):
+        await shelf.track(sample_record)
+        await shelf.track(sample_record_2)
+        await shelf.confirm(sample_record.doi)
+        records = await shelf.list_all()
+        assert len(records) == 2
+        assert sum(1 for r in records if r.confirmed) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -138,105 +150,111 @@ class TestShelfCrud:
 # ---------------------------------------------------------------------------
 
 class TestShelfDedup:
-    def test_arxiv_then_journal_dedup(self, shelf):
+    @pytest.mark.asyncio
+    async def test_arxiv_then_journal_dedup(self, shelf):
         """arXiv entry should merge when journal DOI arrives via S2."""
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.48550/arXiv.2411.08909",
             title="LC-PLM",
             authors=["Author A"],
             source_tool="arxiv",
         ))
-        assert len(shelf.list_all()) == 1
+        assert len(await shelf.list_all()) == 1
 
         # S2 arrives with journal DOI + arXiv alt
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.1101/2024.10.29.620988",
             title="LC-PLM: Long-context Protein Language Modeling",
             authors=["Author A", "Author B"],
             alt_dois=["10.48550/arXiv.2411.08909"],
             source_tool="semantic_scholar",
         ))
-        assert len(shelf.list_all()) == 1
-        rec = shelf.list_all()[0]
+        assert len(await shelf.list_all()) == 1
+        rec = (await shelf.list_all())[0]
         # Journal DOI becomes primary (not a preprint DOI)
         assert rec.doi == "10.1101/2024.10.29.620988"
         assert "10.48550/arXiv.2411.08909" in rec.alt_dois
 
-    def test_journal_then_arxiv_dedup(self, shelf):
+    @pytest.mark.asyncio
+    async def test_journal_then_arxiv_dedup(self, shelf):
         """bioRxiv entry should merge when arXiv DOI arrives, bioRxiv keeps primary."""
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.1101/2024.10.29.620988",
             title="LC-PLM",
             source_tool="semantic_scholar",
         ))
         # arXiv arrives with bioRxiv DOI as alt
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.48550/arXiv.2411.08909",
             title="LC-PLM",
             alt_dois=["10.1101/2024.10.29.620988"],
             source_tool="arxiv",
         ))
-        assert len(shelf.list_all()) == 1
-        rec = shelf.list_all()[0]
+        assert len(await shelf.list_all()) == 1
+        rec = (await shelf.list_all())[0]
         # bioRxiv DOI has higher priority than arXiv DOI
         assert rec.doi == "10.1101/2024.10.29.620988"
         assert "10.48550/arXiv.2411.08909" in rec.alt_dois
 
-    def test_real_journal_doi_preferred(self, shelf):
+    @pytest.mark.asyncio
+    async def test_real_journal_doi_preferred(self, shelf):
         """A real journal DOI should always win over preprint DOIs."""
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.48550/arXiv.1706.03762",
             title="Attention Is All You Need",
             source_tool="arxiv",
         ))
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.5555/3295222.3295349",
             title="Attention is All you Need",
             alt_dois=["10.48550/arXiv.1706.03762"],
             source_tool="semantic_scholar",
         ))
-        assert len(shelf.list_all()) == 1
-        rec = shelf.list_all()[0]
+        assert len(await shelf.list_all()) == 1
+        rec = (await shelf.list_all())[0]
         assert rec.doi == "10.5555/3295222.3295349"
         assert "10.48550/arXiv.1706.03762" in rec.alt_dois
 
-    def test_dedup_preserves_user_fields(self, shelf):
+    @pytest.mark.asyncio
+    async def test_dedup_preserves_user_fields(self, shelf):
         """Merge should preserve score/confirmed/notes from existing entry."""
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.48550/arXiv.1706.03762",
             title="Attention Is All You Need",
             source_tool="arxiv",
         ))
-        shelf.set_score("10.48550/arXiv.1706.03762", 9)
-        shelf.confirm("10.48550/arXiv.1706.03762")
-        shelf.set_note("10.48550/arXiv.1706.03762", "Foundational paper")
+        await shelf.set_score("10.48550/arXiv.1706.03762", 9)
+        await shelf.confirm("10.48550/arXiv.1706.03762")
+        await shelf.set_note("10.48550/arXiv.1706.03762", "Foundational paper")
 
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.5555/3295222.3295349",
             title="Attention is All you Need",
             alt_dois=["10.48550/arXiv.1706.03762"],
             source_tool="semantic_scholar",
         ))
-        rec = shelf.list_all()[0]
+        rec = (await shelf.list_all())[0]
         assert rec.score == 9
         assert rec.confirmed is True
         assert rec.notes == "Foundational paper"
 
-    def test_no_false_dedup(self, shelf):
+    @pytest.mark.asyncio
+    async def test_no_false_dedup(self, shelf):
         """Papers with no overlapping DOIs should not merge."""
-        shelf.track(CitationRecord(doi="10.1234/a", title="Paper A"))
-        shelf.track(CitationRecord(doi="10.1234/b", title="Paper B"))
-        assert len(shelf.list_all()) == 2
+        await shelf.track(CitationRecord(doi="10.1234/a", title="Paper A"))
+        await shelf.track(CitationRecord(doi="10.1234/b", title="Paper B"))
+        assert len(await shelf.list_all()) == 2
 
-    def test_resolve_doi_via_alt(self, shelf):
+    @pytest.mark.asyncio
+    async def test_resolve_doi_via_alt(self, shelf):
         """Operations by alt DOI should resolve to the correct record."""
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.5555/3295222.3295349",
             title="Attention",
             alt_dois=["10.48550/arXiv.1706.03762"],
         ))
-        assert shelf.set_score("10.48550/arXiv.1706.03762", 8)
-        assert shelf.list_all()[0].score == 8
+        assert await shelf.set_score("10.48550/arXiv.1706.03762", 8)
+        assert (await shelf.list_all())[0].score == 8
 
 
 # ---------------------------------------------------------------------------
@@ -244,25 +262,26 @@ class TestShelfDedup:
 # ---------------------------------------------------------------------------
 
 class TestShelfPersistence:
-    def test_export_import_simulates_session_restore(self, sample_record):
+    @pytest.mark.asyncio
+    async def test_export_import_simulates_session_restore(self, sample_record):
         """Export from one shelf, import into a fresh one — simulates agent memory restore."""
         shelf1 = ResearchShelf()
-        shelf1.track(sample_record)
-        shelf1.set_score(sample_record.doi, 7)
-        exported = shelf1.export_json()
+        await shelf1.track(sample_record)
+        await shelf1.set_score(sample_record.doi, 7)
+        exported = await shelf1.export_json()
 
         shelf2 = ResearchShelf()
-        new, updated = shelf2.import_json(exported)
+        new, updated = await shelf2.import_json(exported)
         assert new == 1
         assert updated == 0
-        records = shelf2.list_all()
+        records = await shelf2.list_all()
         assert len(records) == 1
         assert records[0].score == 7
 
-    def test_fresh_shelf_is_empty(self):
+    @pytest.mark.asyncio
+    async def test_fresh_shelf_is_empty(self):
         shelf = ResearchShelf()
-        assert shelf.list_all() == []
-        assert shelf.count() == 0
+        assert await shelf.list_all() == []
 
 
 # ---------------------------------------------------------------------------
@@ -280,15 +299,17 @@ class TestBibtexExport:
         assert "Vaswani, Ashish and Shazeer, Noam" in result
         assert "doi = {10.48550/arXiv.1706.03762}" in result
 
-    def test_shelf_export_bibtex(self, shelf, sample_record, sample_record_2):
-        shelf.track(sample_record)
-        shelf.track(sample_record_2)
-        result = shelf.export_bibtex()
+    @pytest.mark.asyncio
+    async def test_shelf_export_bibtex(self, shelf, sample_record, sample_record_2):
+        await shelf.track(sample_record)
+        await shelf.track(sample_record_2)
+        result = await shelf.export_bibtex()
         assert "vaswani2017" in result or "Vaswani" in result
         assert "bender2021" in result
 
-    def test_empty_shelf_bibtex(self, shelf):
-        assert shelf.export_bibtex() == ""
+    @pytest.mark.asyncio
+    async def test_empty_shelf_bibtex(self, shelf):
+        assert await shelf.export_bibtex() == ""
 
 
 class TestRisExport:
@@ -302,9 +323,10 @@ class TestRisExport:
         assert "DO  - 10.48550/arXiv.1706.03762" in result
         assert "ER  - " in result
 
-    def test_shelf_export_ris(self, shelf, sample_record):
-        shelf.track(sample_record)
-        result = shelf.export_ris()
+    @pytest.mark.asyncio
+    async def test_shelf_export_ris(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        result = await shelf.export_ris()
         assert "TY  - GEN" in result
         assert "ER  - " in result
 
@@ -314,27 +336,29 @@ class TestRisExport:
 # ---------------------------------------------------------------------------
 
 class TestJsonRoundtrip:
-    def test_export_import_roundtrip(self, shelf, sample_record, sample_record_2):
-        shelf.track(sample_record)
-        shelf.track(sample_record_2)
-        shelf.set_score(sample_record.doi, 8)
-        shelf.confirm(sample_record_2.doi)
+    @pytest.mark.asyncio
+    async def test_export_import_roundtrip(self, shelf, sample_record, sample_record_2):
+        await shelf.track(sample_record)
+        await shelf.track(sample_record_2)
+        await shelf.set_score(sample_record.doi, 8)
+        await shelf.confirm(sample_record_2.doi)
 
-        exported = shelf.export_json()
+        exported = await shelf.export_json()
 
         # Import into fresh shelf
         shelf2 = ResearchShelf()
-        new, updated = shelf2.import_json(exported)
+        new, updated = await shelf2.import_json(exported)
         assert new == 2
         assert updated == 0
 
-        records = {r.doi: r for r in shelf2.list_all()}
+        records = {r.doi: r for r in await shelf2.list_all()}
         assert records[sample_record.doi].score == 8
         assert records[sample_record_2.doi].confirmed is True
 
-    def test_import_merges_preserves_local(self, shelf, sample_record):
-        shelf.track(sample_record)
-        shelf.set_score(sample_record.doi, 5)
+    @pytest.mark.asyncio
+    async def test_import_merges_preserves_local(self, shelf, sample_record):
+        await shelf.track(sample_record)
+        await shelf.set_score(sample_record.doi, 5)
 
         # Import same DOI with updated title
         import_data = json.dumps({
@@ -344,9 +368,9 @@ class TestJsonRoundtrip:
                 "authors": ["Vaswani, Ashish"],
             }
         })
-        shelf.import_json(import_data)
+        await shelf.import_json(import_data)
 
-        records = shelf.list_all()
+        records = await shelf.list_all()
         assert records[0].title == "Updated Title"
         assert records[0].score == 5  # preserved
 
@@ -356,14 +380,16 @@ class TestJsonRoundtrip:
 # ---------------------------------------------------------------------------
 
 class TestStatusLine:
-    def test_empty_shelf(self, shelf):
-        assert shelf.status_line() is None
+    @pytest.mark.asyncio
+    async def test_empty_shelf(self, shelf):
+        assert await shelf.status_line() is None
 
-    def test_nonempty_shelf(self, shelf, sample_record, sample_record_2):
-        shelf.track(sample_record)
-        shelf.track(sample_record_2)
-        shelf.confirm(sample_record.doi)
-        status = shelf.status_line()
+    @pytest.mark.asyncio
+    async def test_nonempty_shelf(self, shelf, sample_record, sample_record_2):
+        await shelf.track(sample_record)
+        await shelf.track(sample_record_2)
+        await shelf.confirm(sample_record.doi)
+        status = await shelf.status_line()
         assert "2 tracked" in status
         assert "1 confirmed" in status
         assert "ResearchShelf" in status
@@ -398,7 +424,7 @@ class TestResearchShelfTool:
     @pytest.mark.asyncio
     async def test_track_and_list(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.1234/test", title="Test Paper", authors=["Author, Test"],
         ))
         result = await research_shelf("list")
@@ -408,7 +434,7 @@ class TestResearchShelfTool:
     @pytest.mark.asyncio
     async def test_confirm(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
+        await shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
         result = await research_shelf("confirm", "10.1234/test")
         assert "Confirmed" in result
 
@@ -420,36 +446,36 @@ class TestResearchShelfTool:
     @pytest.mark.asyncio
     async def test_remove(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(doi="10.1234/a", title="A"))
-        shelf.track(CitationRecord(doi="10.1234/b", title="B"))
+        await shelf.track(CitationRecord(doi="10.1234/a", title="A"))
+        await shelf.track(CitationRecord(doi="10.1234/b", title="B"))
         result = await research_shelf("remove", "10.1234/a, 10.1234/b")
         assert "Removed 2" in result
 
     @pytest.mark.asyncio
     async def test_score(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
+        await shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
         result = await research_shelf("score", "10.1234/test 8")
         assert "Score set to 8" in result
 
     @pytest.mark.asyncio
     async def test_score_invalid(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
+        await shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
         result = await research_shelf("score", "10.1234/test abc")
         assert "integer" in result
 
     @pytest.mark.asyncio
     async def test_note(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
+        await shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
         result = await research_shelf("note", "10.1234/test Very important finding")
         assert "Note set" in result
 
     @pytest.mark.asyncio
     async def test_export_bibtex(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.1234/test", title="Test Paper",
             authors=["Author, Test"], year=2025,
         ))
@@ -460,7 +486,7 @@ class TestResearchShelfTool:
     @pytest.mark.asyncio
     async def test_export_ris(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(
+        await shelf.track(CitationRecord(
             doi="10.1234/test", title="Test Paper",
             authors=["Author, Test"], year=2025,
         ))
@@ -470,7 +496,7 @@ class TestResearchShelfTool:
     @pytest.mark.asyncio
     async def test_export_json(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
+        await shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
         result = await research_shelf("export", "json")
         data = json.loads(result)
         assert "10.1234/test" in data
@@ -492,8 +518,8 @@ class TestResearchShelfTool:
     @pytest.mark.asyncio
     async def test_clear(self):
         shelf = _get_shelf()
-        shelf.track(CitationRecord(doi="10.1234/a", title="A"))
-        shelf.track(CitationRecord(doi="10.1234/b", title="B"))
+        await shelf.track(CitationRecord(doi="10.1234/a", title="A"))
+        await shelf.track(CitationRecord(doi="10.1234/b", title="B"))
         result = await research_shelf("clear")
         assert "Cleared 2" in result
 

@@ -265,7 +265,7 @@ async def web_fetch_direct(
         if arxiv_id:
             from .shelf import _track_on_shelf, CitationRecord
             arxiv_doi = f"10.48550/arXiv.{_strip_version(arxiv_id)}"
-            fm_entries["shelf"] = _track_on_shelf(CitationRecord(
+            fm_entries["shelf"] = await _track_on_shelf(CitationRecord(
                 doi=arxiv_doi,
                 title=title,
                 source_tool="arxiv",

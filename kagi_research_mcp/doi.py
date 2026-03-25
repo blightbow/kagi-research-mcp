@@ -394,7 +394,7 @@ async def _fetch_doi_paper(doi: str) -> str:
         parts = issued.get("date-parts")
         if parts and parts[0]:
             year = parts[0][0]
-    fm_shelf = _track_on_shelf(CitationRecord(
+    fm_shelf = await _track_on_shelf(CitationRecord(
         doi=doi,
         title=title,
         authors=authors,

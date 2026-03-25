@@ -432,7 +432,7 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
     else:
         shelf_doi = arxiv_doi
         shelf_alt = []
-    fm_entries["shelf"] = _track_on_shelf(CitationRecord(
+    fm_entries["shelf"] = await _track_on_shelf(CitationRecord(
         doi=shelf_doi,
         title=paper.get("title", "Untitled"),
         authors=[a.get("name", "Unknown") for a in paper.get("authors") or []],
