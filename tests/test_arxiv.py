@@ -108,7 +108,7 @@ ARXIV_EMPTY_XML = """\
 @pytest.fixture(autouse=True)
 def _disable_arxiv_rate_limit(monkeypatch):
     """Disable the 3s rate limiter in unit tests."""
-    monkeypatch.setattr(_arxiv_module, "_ARXIV_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(_arxiv_module._arxiv_limiter, "min_interval", 0.0)
 
 
 # ---------------------------------------------------------------------------

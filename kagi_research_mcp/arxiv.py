@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import re
-import time
 import xml.etree.ElementTree as ET
 from typing import Annotated, Optional
 
@@ -11,7 +10,7 @@ from pydantic import Field
 
 import httpx
 
-from .common import _API_USER_AGENT
+from .common import _API_USER_AGENT, RateLimiter
 from .markdown import _build_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -58,9 +57,7 @@ def _strip_version(arxiv_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Rate limiter — 3 seconds between requests per arXiv API terms of use.
 # ---------------------------------------------------------------------------
-_arxiv_rate_lock = asyncio.Lock()
-_arxiv_last_request: float = 0.0
-_ARXIV_MIN_INTERVAL = 3.0  # seconds
+_arxiv_limiter = RateLimiter(3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +161,8 @@ async def _arxiv_request(params: dict) -> list[dict] | str:
 
     Returns a list of parsed entry dicts on success, or an error string.
     """
-    global _arxiv_last_request
-
     for attempt in range(_ARXIV_MAX_RETRIES + 1):
-        async with _arxiv_rate_lock:
-            elapsed = time.monotonic() - _arxiv_last_request
-            if elapsed < _ARXIV_MIN_INTERVAL:
-                await asyncio.sleep(_ARXIV_MIN_INTERVAL - elapsed)
-            _arxiv_last_request = time.monotonic()
+        await _arxiv_limiter.wait()
 
         try:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -416,23 +407,16 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
         )
 
     # Passive shelf tracking (fire-and-forget)
-    try:
-        from .shelf import _get_shelf, CitationRecord
-        # Extract version suffix (e.g. "v7" from "1706.03762v7")
-        version_match = _VERSION_SUFFIX_RE.search(clean_id)
-        version_str = version_match.group(0) if version_match else None
-        shelf = _get_shelf()
-        shelf.track(CitationRecord(
-            doi=arxiv_doi,
-            title=paper.get("title", "Untitled"),
-            authors=[a.get("name", "Unknown") for a in paper.get("authors") or []],
-            arxiv_version=version_str,
-            source_tool="arxiv",
-            citation_apa=citation_text,
-        ))
-        fm_entries["shelf"] = shelf.status_line()
-    except Exception:
-        logger.debug("Shelf tracking failed for arXiv %s", clean_id, exc_info=True)
+    from .shelf import _track_on_shelf, CitationRecord
+    version_match = _VERSION_SUFFIX_RE.search(clean_id)
+    fm_entries["shelf"] = _track_on_shelf(CitationRecord(
+        doi=arxiv_doi,
+        title=paper.get("title", "Untitled"),
+        authors=[a.get("name", "Unknown") for a in paper.get("authors") or []],
+        arxiv_version=version_match.group(0) if version_match else None,
+        source_tool="arxiv",
+        citation_apa=citation_text,
+    ))
 
     fm = _build_frontmatter(fm_entries)
     body = _format_arxiv_paper(paper, html_available=html_available)
