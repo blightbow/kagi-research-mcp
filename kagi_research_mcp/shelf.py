@@ -6,8 +6,15 @@ for agent memory persistence, and an MCP tool for interactive management.
 
 The shelf lives in the MCP server process memory for the session lifetime.
 Cross-session persistence is agent-managed via export json / import.
+
+Concurrency: the shelf is shared across all agents in an MCP session
+(subagents reuse the parent's MCP connections by default).  All public
+methods that touch _records are serialized by an asyncio.Lock to prevent
+race conditions from concurrent tool calls (e.g. two subagents tracking
+the same paper via different DOIs simultaneously).
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -152,10 +159,15 @@ def record_to_ris(record: CitationRecord) -> str:
 
 
 class ResearchShelf:
-    """In-memory research document tracker for the current session."""
+    """In-memory research document tracker for the current session.
+
+    All public methods are async and serialized by an internal lock to
+    prevent race conditions when multiple agents share the same MCP server.
+    """
 
     def __init__(self):
         self._records: dict[str, CitationRecord] = {}
+        self._lock = asyncio.Lock()
 
     def _find_by_alt_doi(self, record: CitationRecord) -> Optional[str]:
         """Find an existing record that shares a DOI with the new record.
@@ -173,41 +185,39 @@ class ResearchShelf:
                 return key
         return None
 
-    def track(self, record: CitationRecord) -> None:
+    def _track_unlocked(self, record: CitationRecord) -> None:
+        """Core upsert logic — caller must hold self._lock."""
+        existing_key = record.doi if record.doi in self._records else None
+
+        if not existing_key:
+            existing_key = self._find_by_alt_doi(record)
+
+        if existing_key:
+            existing = self._records[existing_key]
+            record.score = existing.score
+            record.confirmed = existing.confirmed
+            record.notes = existing.notes
+            record.added = existing.added
+            all_dois = set(existing.alt_dois) | set(record.alt_dois)
+            all_dois.add(existing.doi)
+            all_dois.add(record.doi)
+            record.doi = max(all_dois, key=_doi_priority)
+            record.alt_dois = sorted(d for d in all_dois if d != record.doi)
+            if existing_key != record.doi and existing_key in self._records:
+                del self._records[existing_key]
+        else:
+            record.added = record.added or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self._records[record.doi] = record
+
+    async def track(self, record: CitationRecord) -> None:
         """Upsert a record — updates metadata, preserves score/confirmed/notes.
 
         Deduplicates across preprint/journal DOIs: when the same paper is
         tracked via different DOIs (e.g. arXiv + bioRxiv, or preprint +
         journal), merges into a single entry keyed on the journal DOI.
         """
-        # Check for exact DOI match first
-        existing_key = record.doi if record.doi in self._records else None
-
-        # If no exact match, check alt_dois for cross-DOI dedup
-        if not existing_key:
-            existing_key = self._find_by_alt_doi(record)
-
-        if existing_key:
-            existing = self._records[existing_key]
-            # Preserve user-managed fields
-            record.score = existing.score
-            record.confirmed = existing.confirmed
-            record.notes = existing.notes
-            record.added = existing.added
-            # Merge alt_dois from both records
-            all_dois = set(existing.alt_dois) | set(record.alt_dois)
-            all_dois.add(existing.doi)
-            all_dois.add(record.doi)
-            # Choose the highest-priority DOI as primary
-            record.doi = max(all_dois, key=_doi_priority)
-            # alt_dois = everything except the chosen primary
-            record.alt_dois = sorted(d for d in all_dois if d != record.doi)
-            # Remove old key if re-keying
-            if existing_key != record.doi and existing_key in self._records:
-                del self._records[existing_key]
-        else:
-            record.added = record.added or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._records[record.doi] = record
+        async with self._lock:
+            self._track_unlocked(record)
 
     def _resolve_doi(self, doi: str) -> Optional[str]:
         """Resolve a DOI to its primary key, checking alt_dois as fallback."""
@@ -218,96 +228,107 @@ class ResearchShelf:
                 return key
         return None
 
-    def remove(self, dois: list[str]) -> list[str]:
+    async def remove(self, dois: list[str]) -> list[str]:
         """Batch remove by DOI (resolves alt_dois). Returns list of actually removed DOIs."""
-        removed = []
-        for doi in dois:
-            key = self._resolve_doi(doi)
-            if key:
-                del self._records[key]
-                removed.append(doi)
-        return removed
+        async with self._lock:
+            removed = []
+            for doi in dois:
+                key = self._resolve_doi(doi)
+                if key:
+                    del self._records[key]
+                    removed.append(doi)
+            return removed
 
-    def set_score(self, doi: str, value: int) -> bool:
+    async def set_score(self, doi: str, value: int) -> bool:
         """Set score for a paper. Returns False if DOI not found."""
-        key = self._resolve_doi(doi)
-        if not key:
-            return False
-        self._records[key].score = value
-        return True
+        async with self._lock:
+            key = self._resolve_doi(doi)
+            if not key:
+                return False
+            self._records[key].score = value
+            return True
 
-    def confirm(self, doi: str) -> bool:
+    async def confirm(self, doi: str) -> bool:
         """Mark a paper as confirmed. Returns False if DOI not found."""
-        key = self._resolve_doi(doi)
-        if not key:
-            return False
-        self._records[key].confirmed = True
-        return True
+        async with self._lock:
+            key = self._resolve_doi(doi)
+            if not key:
+                return False
+            self._records[key].confirmed = True
+            return True
 
-    def set_note(self, doi: str, text: str) -> bool:
+    async def set_note(self, doi: str, text: str) -> bool:
         """Set freetext note. Returns False if DOI not found."""
-        key = self._resolve_doi(doi)
-        if not key:
-            return False
-        self._records[key].notes = text
-        return True
+        async with self._lock:
+            key = self._resolve_doi(doi)
+            if not key:
+                return False
+            self._records[key].notes = text
+            return True
 
-    def list_all(self) -> list[CitationRecord]:
+    async def list_all(self) -> list[CitationRecord]:
         """Return all records sorted by added timestamp."""
-        return sorted(self._records.values(), key=lambda r: r.added or "")
+        async with self._lock:
+            return sorted(self._records.values(), key=lambda r: r.added or "")
 
-    def count(self) -> int:
-        """Return total number of tracked papers."""
-        return len(self._records)
-
-    def confirmed_count(self) -> int:
-        """Return number of confirmed papers."""
-        return sum(1 for r in self._records.values() if r.confirmed)
-
-    def export_bibtex(self) -> str:
+    async def export_bibtex(self) -> str:
         """Export all records as a BibTeX file."""
-        entries = [record_to_bibtex(r) for r in self.list_all()]
-        return "\n\n".join(entries)
+        async with self._lock:
+            entries = [record_to_bibtex(r) for r in sorted(
+                self._records.values(), key=lambda r: r.added or "",
+            )]
+            return "\n\n".join(entries)
 
-    def export_ris(self) -> str:
+    async def export_ris(self) -> str:
         """Export all records as an RIS file."""
-        entries = [record_to_ris(r) for r in self.list_all()]
-        return "\n\n".join(entries)
+        async with self._lock:
+            entries = [record_to_ris(r) for r in sorted(
+                self._records.values(), key=lambda r: r.added or "",
+            )]
+            return "\n\n".join(entries)
 
-    def export_json(self) -> str:
+    async def export_json(self) -> str:
         """Export full shelf as JSON string for agent memory persistence."""
-        return json.dumps(
-            {doi: asdict(rec) for doi, rec in self._records.items()},
-            indent=2, ensure_ascii=False,
-        )
+        async with self._lock:
+            return json.dumps(
+                {doi: asdict(rec) for doi, rec in self._records.items()},
+                indent=2, ensure_ascii=False,
+            )
 
-    def import_json(self, data: str) -> tuple[int, int]:
-        """Import shelf from JSON string. Returns (new_count, updated_count)."""
-        parsed = json.loads(data)
-        new_count = 0
-        updated_count = 0
-        for doi, rec_dict in parsed.items():
-            is_new = doi not in self._records
-            self.track(CitationRecord(**rec_dict))
-            if is_new:
-                new_count += 1
-            else:
-                updated_count += 1
-        return new_count, updated_count
+    async def import_json(self, data: str) -> tuple[int, int]:
+        """Import shelf from JSON string. Returns (new_count, updated_count).
 
-    def clear(self) -> int:
+        Acquires the lock once for the entire import batch to ensure
+        atomicity and avoid deadlock (track() also acquires the lock).
+        """
+        async with self._lock:
+            parsed = json.loads(data)
+            new_count = 0
+            updated_count = 0
+            for doi, rec_dict in parsed.items():
+                is_new = doi not in self._records
+                self._track_unlocked(CitationRecord(**rec_dict))
+                if is_new:
+                    new_count += 1
+                else:
+                    updated_count += 1
+            return new_count, updated_count
+
+    async def clear(self) -> int:
         """Remove all entries. Returns count removed."""
-        count = len(self._records)
-        self._records.clear()
-        return count
+        async with self._lock:
+            count = len(self._records)
+            self._records.clear()
+            return count
 
-    def status_line(self) -> Optional[str]:
+    async def status_line(self) -> Optional[str]:
         """Compact status for frontmatter. Returns None if shelf is empty."""
-        total = len(self._records)
-        if total == 0:
-            return None
-        confirmed = self.confirmed_count()
-        return f"{total} tracked ({confirmed} confirmed) — use ResearchShelf to review"
+        async with self._lock:
+            total = len(self._records)
+            if total == 0:
+                return None
+            confirmed = sum(1 for r in self._records.values() if r.confirmed)
+            return f"{total} tracked ({confirmed} confirmed) — use ResearchShelf to review"
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +352,7 @@ def _reset_shelf() -> None:
     _shelf = None
 
 
-def _track_on_shelf(record: CitationRecord) -> Optional[str]:
+async def _track_on_shelf(record: CitationRecord) -> Optional[str]:
     """Track a record on the shelf and return the status line.
 
     Fire-and-forget helper for handlers — catches all exceptions
@@ -339,8 +360,8 @@ def _track_on_shelf(record: CitationRecord) -> Optional[str]:
     """
     try:
         shelf = _get_shelf()
-        shelf.track(record)
-        return shelf.status_line()
+        await shelf.track(record)
+        return await shelf.status_line()
     except Exception:
         logger.debug("Shelf tracking failed for %s", record.doi, exc_info=True)
         return None
@@ -402,14 +423,14 @@ async def research_shelf(
     shelf = _get_shelf()
 
     if action == "list":
-        records = shelf.list_all()
+        records = await shelf.list_all()
         return _format_shelf_list(records)
 
     elif action == "confirm":
         doi = query.strip()
         if not doi:
             return "Error: DOI is required for confirm action."
-        if shelf.confirm(doi):
+        if await shelf.confirm(doi):
             return f"Confirmed: {doi}"
         return f"Error: DOI not found on shelf: {doi}"
 
@@ -417,7 +438,7 @@ async def research_shelf(
         dois = [d.strip() for d in query.split(",") if d.strip()]
         if not dois:
             return "Error: At least one DOI is required for remove action."
-        removed = shelf.remove(dois)
+        removed = await shelf.remove(dois)
         if removed:
             return f"Removed {len(removed)} paper(s): {', '.join(removed)}"
         return "No matching DOIs found on shelf."
@@ -431,7 +452,7 @@ async def research_shelf(
             value = int(value_str)
         except ValueError:
             return f"Error: Score must be an integer, got '{value_str}'."
-        if shelf.set_score(doi, value):
+        if await shelf.set_score(doi, value):
             return f"Score set to {value} for {doi}"
         return f"Error: DOI not found on shelf: {doi}"
 
@@ -440,20 +461,20 @@ async def research_shelf(
         if len(parts) < 2:
             return "Error: note action requires 'DOI TEXT'."
         doi, text = parts
-        if shelf.set_note(doi, text):
+        if await shelf.set_note(doi, text):
             return f"Note set for {doi}"
         return f"Error: DOI not found on shelf: {doi}"
 
     elif action == "export":
         fmt = query.strip().lower()
         if fmt == "bibtex":
-            result = shelf.export_bibtex()
+            result = await shelf.export_bibtex()
             return result if result else "Shelf is empty."
         elif fmt == "ris":
-            result = shelf.export_ris()
+            result = await shelf.export_ris()
             return result if result else "Shelf is empty."
         elif fmt == "json":
-            return shelf.export_json()
+            return await shelf.export_json()
         else:
             return f"Error: Unknown export format '{fmt}'. Use bibtex, ris, or json."
 
@@ -461,7 +482,7 @@ async def research_shelf(
         if not query.strip():
             return "Error: JSON data is required for import action."
         try:
-            new, updated = shelf.import_json(query)
+            new, updated = await shelf.import_json(query)
             parts = []
             if new:
                 parts.append(f"{new} new")
@@ -472,7 +493,7 @@ async def research_shelf(
             return f"Error: Invalid JSON — {e}"
 
     elif action == "clear":
-        count = shelf.clear()
+        count = await shelf.clear()
         return f"Cleared {count} record(s) from shelf."
 
     else:

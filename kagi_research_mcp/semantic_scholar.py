@@ -368,7 +368,7 @@ async def _fetch_s2_paper(paper_id: str) -> str:
             arxiv_doi = f"10.48550/arXiv.{arxiv_id}"
             if arxiv_doi != doi:
                 alt_dois.append(arxiv_doi)
-        fm_shelf = _track_on_shelf(CitationRecord(
+        fm_shelf = await _track_on_shelf(CitationRecord(
             doi=doi,
             title=title,
             authors=author_names,
