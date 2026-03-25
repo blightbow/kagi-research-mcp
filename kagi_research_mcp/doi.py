@@ -10,25 +10,21 @@ negotiation (doi.org) and the DataCite REST API.  These are used for:
 import asyncio
 import logging
 import re
-import time
 from typing import Optional
 
 import httpx
 
-from .common import _API_USER_AGENT
+from .common import _API_USER_AGENT, RateLimiter
 from .markdown import _build_frontmatter, _fence_content, _TRUST_ADVISORY
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Rate limiter — shared across all doi.org content negotiation calls.
-# CrossRef polite pool: 10 req/s with mailto, 5 req/s without.
-# DataCite via doi.org: 1,000/5min (~3.3/s).
-# Conservative default: 5/sec (0.2s interval).
+# Rate limiters
 # ---------------------------------------------------------------------------
-_doi_rate_lock = asyncio.Lock()
-_doi_last_request: float = 0.0
-_DOI_MIN_INTERVAL = 0.2  # seconds between doi.org requests
+# doi.org: CrossRef polite pool 10 req/s with mailto, 5 req/s without.
+# DataCite via doi.org: 1,000/5min (~3.3/s). Conservative default: 5/sec.
+_doi_limiter = RateLimiter(0.2)
 
 
 # ---------------------------------------------------------------------------
@@ -87,19 +83,7 @@ async def _detect_ra(doi: str, *, timeout: float = 5.0) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # DataCite REST API
 # ---------------------------------------------------------------------------
-_datacite_rate_lock = asyncio.Lock()
-_datacite_last_request: float = 0.0
-_DATACITE_MIN_INTERVAL = 0.1  # 10 req/s
-
-
-async def _datacite_rate_wait() -> None:
-    """Enforce minimum interval between DataCite API requests."""
-    global _datacite_last_request
-    async with _datacite_rate_lock:
-        elapsed = time.monotonic() - _datacite_last_request
-        if elapsed < _DATACITE_MIN_INTERVAL:
-            await asyncio.sleep(_DATACITE_MIN_INTERVAL - elapsed)
-        _datacite_last_request = time.monotonic()
+_datacite_limiter = RateLimiter(0.1)  # 10 req/s
 
 
 async def fetch_datacite_metadata(
@@ -110,7 +94,7 @@ async def fetch_datacite_metadata(
     Returns a simplified dict with ORCIDs, affiliations, SPDX license,
     and related identifiers — or None on failure.
     """
-    await _datacite_rate_wait()
+    await _datacite_limiter.wait()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(
@@ -174,14 +158,28 @@ async def fetch_datacite_metadata(
 # Content negotiation
 # ---------------------------------------------------------------------------
 
-async def _doi_rate_wait() -> None:
-    """Enforce minimum interval between doi.org requests."""
-    global _doi_last_request
-    async with _doi_rate_lock:
-        elapsed = time.monotonic() - _doi_last_request
-        if elapsed < _DOI_MIN_INTERVAL:
-            await asyncio.sleep(_DOI_MIN_INTERVAL - elapsed)
-        _doi_last_request = time.monotonic()
+async def _doi_content_negotiate(
+    doi: str, accept: str, *, timeout: float = 5.0,
+) -> Optional[httpx.Response]:
+    """Send a rate-limited content negotiation request to doi.org.
+
+    Returns the Response on HTTP 200, or None on any failure.
+    Never raises — designed for concurrent use with asyncio.gather.
+    """
+    await _doi_limiter.wait()
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(
+                f"https://doi.org/{doi}",
+                headers={"User-Agent": _API_USER_AGENT, "Accept": accept},
+            )
+            if resp.status_code == 200:
+                return resp
+            logger.debug("DOI content negotiation HTTP %d for %s (%s)", resp.status_code, doi, accept)
+            return None
+    except Exception as e:
+        logger.debug("DOI content negotiation failed for %s: %s", doi, e)
+        return None
 
 
 async def fetch_formatted_citation(
@@ -189,31 +187,13 @@ async def fetch_formatted_citation(
 ) -> Optional[str]:
     """Fetch a pre-formatted citation string via DOI content negotiation.
 
-    Uses the ``text/x-bibliography`` content type with the specified CSL
-    style (default APA).  The doi.org server runs citeproc and returns a
-    ready-to-paste citation string.
-
     Returns the citation string, or None on any failure.
-    Designed for concurrent use with asyncio.gather — never raises.
     """
-    await _doi_rate_wait()
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(
-                f"https://doi.org/{doi}",
-                headers={
-                    "User-Agent": _API_USER_AGENT,
-                    "Accept": f"text/x-bibliography; style={style}",
-                },
-            )
-            if resp.status_code == 200:
-                text = resp.text.strip()
-                return text if text else None
-            logger.debug("DOI citation fetch HTTP %d for %s", resp.status_code, doi)
-            return None
-    except Exception as e:
-        logger.debug("DOI citation fetch failed for %s: %s", doi, e)
+    resp = await _doi_content_negotiate(doi, f"text/x-bibliography; style={style}", timeout=timeout)
+    if resp is None:
         return None
+    text = resp.text.strip()
+    return text if text else None
 
 
 async def fetch_csl_json(
@@ -221,28 +201,10 @@ async def fetch_csl_json(
 ) -> Optional[dict]:
     """Fetch structured CSL-JSON metadata via DOI content negotiation.
 
-    Returns parsed JSON dict with fields like ``author``, ``title``,
-    ``DOI``, ``issued``, ``publisher``, ``type``, ``abstract``, etc.
-
-    Returns None on any failure.  Designed for concurrent use — never raises.
+    Returns parsed JSON dict, or None on any failure.
     """
-    await _doi_rate_wait()
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(
-                f"https://doi.org/{doi}",
-                headers={
-                    "User-Agent": _API_USER_AGENT,
-                    "Accept": "application/vnd.citationstyles.csl+json",
-                },
-            )
-            if resp.status_code == 200:
-                return resp.json()
-            logger.debug("DOI CSL-JSON fetch HTTP %d for %s", resp.status_code, doi)
-            return None
-    except Exception as e:
-        logger.debug("DOI CSL-JSON fetch failed for %s: %s", doi, e)
-        return None
+    resp = await _doi_content_negotiate(doi, "application/vnd.citationstyles.csl+json", timeout=timeout)
+    return resp.json() if resp is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -367,21 +329,22 @@ async def _fetch_doi_paper(doi: str) -> str:
         arxiv_id = arxiv_match.group(1)
         return await _fetch_arxiv_paper(arxiv_id)
 
-    # Concurrent: CSL-JSON metadata + formatted APA citation
-    csl_result, cite_result = await asyncio.gather(
+    # Concurrent: CSL-JSON metadata + formatted APA citation + RA detection
+    csl_result, cite_result, ra_result = await asyncio.gather(
         fetch_csl_json(doi),
         fetch_formatted_citation(doi),
+        _detect_ra(doi),
         return_exceptions=True,
     )
     csl_data = csl_result if isinstance(csl_result, dict) else None
     citation_text = cite_result if isinstance(cite_result, str) else None
+    ra = ra_result if isinstance(ra_result, str) else None
 
     if not csl_data and not citation_text:
         return f"Error: Could not resolve DOI: {doi}. No metadata returned from doi.org."
 
-    # DataCite enrichment: ORCIDs, SPDX license, related identifiers
+    # DataCite enrichment (only for DataCite DOIs)
     datacite = None
-    ra = await _detect_ra(doi)
     if ra == "DataCite":
         datacite = await fetch_datacite_metadata(doi)
 
@@ -397,30 +360,23 @@ async def _fetch_doi_paper(doi: str) -> str:
         body += f"\n## Citation\n\n{citation_text}\n"
 
     # Passive shelf tracking
-    fm_shelf = None
-    try:
-        from .shelf import _get_shelf, CitationRecord
-        shelf = _get_shelf()
-        authors = [_format_csl_author(a) for a in (csl_data or {}).get("author", [])]
-        year = None
-        if issued := (csl_data or {}).get("issued"):
-            parts = issued.get("date-parts")
-            if parts and parts[0]:
-                year = parts[0][0]
-        orcids = datacite.get("orcids") if datacite else None
-        shelf.track(CitationRecord(
-            doi=doi,
-            title=title,
-            authors=authors,
-            year=year,
-            venue=(csl_data or {}).get("container-title"),
-            source_tool="doi",
-            citation_apa=citation_text,
-            orcids=orcids,
-        ))
-        fm_shelf = shelf.status_line()
-    except Exception:
-        logger.debug("Shelf tracking failed for DOI %s", doi, exc_info=True)
+    from .shelf import _track_on_shelf, CitationRecord
+    authors = [_format_csl_author(a) for a in (csl_data or {}).get("author", [])]
+    year = None
+    if issued := (csl_data or {}).get("issued"):
+        parts = issued.get("date-parts")
+        if parts and parts[0]:
+            year = parts[0][0]
+    fm_shelf = _track_on_shelf(CitationRecord(
+        doi=doi,
+        title=title,
+        authors=authors,
+        year=year,
+        venue=(csl_data or {}).get("container-title"),
+        source_tool="doi",
+        citation_apa=citation_text,
+        orcids=datacite.get("orcids") if datacite else None,
+    ))
 
     fm = _build_frontmatter({
         "title": title,

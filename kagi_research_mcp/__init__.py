@@ -137,14 +137,15 @@ Use paper_id to scope to a single paper, or omit for corpus-wide search.
 Example: action="snippets", query="multi-head attention",
 paper_id="204e3073870fae3d05bcbc2f6a8e263d9b72e776".""",
 
-    "research_shelf": """Manage the research shelf — a persistent tracker for papers inspected during research.
+    "research_shelf": """Manage the research shelf — an in-memory tracker for papers inspected during research.
 
 Papers are automatically added when you use ArXiv, SemanticScholar, or DOI
 tools to inspect individual papers. Use this tool to review, score, confirm,
 or remove tracked papers, and to export citations in BibTeX or RIS format.
 
-The shelf persists across context resets. Use export json / import to save
-and restore shelf state via agent memory for cross-session persistence.""",
+The shelf survives context compaction within the same session. For cross-session
+persistence, use export json to save the shelf to a memory file, then import
+it in a future session.""",
 }
 
 # Per-profile description overrides (replaces the template entirely)

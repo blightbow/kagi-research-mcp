@@ -146,8 +146,9 @@ class TestShelfPersistence:
         exported = shelf1.export_json()
 
         shelf2 = ResearchShelf()
-        count = shelf2.import_json(exported)
-        assert count == 1
+        new, updated = shelf2.import_json(exported)
+        assert new == 1
+        assert updated == 0
         records = shelf2.list_all()
         assert len(records) == 1
         assert records[0].score == 7
@@ -217,8 +218,9 @@ class TestJsonRoundtrip:
 
         # Import into fresh shelf
         shelf2 = ResearchShelf()
-        count = shelf2.import_json(exported)
-        assert count == 2
+        new, updated = shelf2.import_json(exported)
+        assert new == 2
+        assert updated == 0
 
         records = {r.doi: r for r in shelf2.list_all()}
         assert records[sample_record.doi].score == 8
@@ -377,7 +379,7 @@ class TestResearchShelfTool:
             }
         })
         result = await research_shelf("import", import_data)
-        assert "Imported 1" in result
+        assert "1 new" in result
         list_result = await research_shelf("list")
         assert "Imported Paper" in list_result
 

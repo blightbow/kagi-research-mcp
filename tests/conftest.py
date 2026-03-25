@@ -14,14 +14,14 @@ _doi_mod = sys.modules["kagi_research_mcp.doi"]
 @pytest.fixture(autouse=True)
 def _disable_s2_rate_limit(monkeypatch):
     """Disable the 1s rate limiter in unit tests."""
-    monkeypatch.setattr(_s2_mod, "_S2_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(_s2_mod._s2_limiter, "min_interval", 0.0)
 
 
 @pytest.fixture(autouse=True)
 def _disable_doi_rate_limit(monkeypatch):
-    """Disable the 0.2s rate limiter in unit tests."""
-    monkeypatch.setattr(_doi_mod, "_DOI_MIN_INTERVAL", 0.0)
-    monkeypatch.setattr(_doi_mod, "_DATACITE_MIN_INTERVAL", 0.0)
+    """Disable DOI and DataCite rate limiters in unit tests."""
+    monkeypatch.setattr(_doi_mod._doi_limiter, "min_interval", 0.0)
+    monkeypatch.setattr(_doi_mod._datacite_limiter, "min_interval", 0.0)
 
 
 # Sample markdown document used across multiple test modules

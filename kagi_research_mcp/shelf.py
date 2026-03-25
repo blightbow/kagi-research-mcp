@@ -1,8 +1,11 @@
-"""Research shelf — persistent document tracker for inspected papers.
+"""Research shelf — in-memory session-scoped document tracker.
 
 Passively populated by arXiv, Semantic Scholar, and DOI handlers when a
 single paper is inspected.  Provides BibTeX/RIS export, JSON import/export
 for agent memory persistence, and an MCP tool for interactive management.
+
+The shelf lives in the MCP server process memory for the session lifetime.
+Cross-session persistence is agent-managed via export json / import.
 """
 
 import json
@@ -190,25 +193,19 @@ class ResearchShelf:
             indent=2, ensure_ascii=False,
         )
 
-    def import_json(self, data: str) -> int:
-        """Import shelf from JSON string. Returns count of records imported."""
+    def import_json(self, data: str) -> tuple[int, int]:
+        """Import shelf from JSON string. Returns (new_count, updated_count)."""
         parsed = json.loads(data)
-        count = 0
+        new_count = 0
+        updated_count = 0
         for doi, rec_dict in parsed.items():
-            record = CitationRecord(**rec_dict)
-            if doi not in self._records:
-                self._records[doi] = record
-                count += 1
+            is_new = doi not in self._records
+            self.track(CitationRecord(**rec_dict))
+            if is_new:
+                new_count += 1
             else:
-                # Merge: update metadata, preserve local score/confirmed/notes
-                existing = self._records[doi]
-                record.score = existing.score
-                record.confirmed = existing.confirmed
-                record.notes = existing.notes
-                record.added = existing.added
-                self._records[doi] = record
-                count += 1
-        return count
+                updated_count += 1
+        return new_count, updated_count
 
     def clear(self) -> int:
         """Remove all entries. Returns count removed."""
@@ -244,6 +241,21 @@ def _reset_shelf() -> None:
     """Reset the global shelf instance (for testing)."""
     global _shelf
     _shelf = None
+
+
+def _track_on_shelf(record: CitationRecord) -> Optional[str]:
+    """Track a record on the shelf and return the status line.
+
+    Fire-and-forget helper for handlers — catches all exceptions
+    and returns None on failure so tracking never blocks tool output.
+    """
+    try:
+        shelf = _get_shelf()
+        shelf.track(record)
+        return shelf.status_line()
+    except Exception:
+        logger.debug("Shelf tracking failed for %s", record.doi, exc_info=True)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +373,13 @@ async def research_shelf(
         if not query.strip():
             return "Error: JSON data is required for import action."
         try:
-            count = shelf.import_json(query)
-            return f"Imported {count} record(s)."
+            new, updated = shelf.import_json(query)
+            parts = []
+            if new:
+                parts.append(f"{new} new")
+            if updated:
+                parts.append(f"{updated} updated")
+            return f"Imported: {', '.join(parts)}." if parts else "No records in import data."
         except (json.JSONDecodeError, TypeError) as e:
             return f"Error: Invalid JSON — {e}"
 

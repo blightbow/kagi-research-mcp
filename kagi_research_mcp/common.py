@@ -1,7 +1,9 @@
-"""Shared constants for kagi-research-mcp."""
+"""Shared constants and utilities for kagi-research-mcp."""
 
+import asyncio
 import os
 import platform
+import time
 from importlib.metadata import version as _pkg_version
 
 # ---------------------------------------------------------------------------
@@ -42,3 +44,23 @@ _API_HEADERS = {
     "User-Agent": _API_USER_AGENT,
     "Accept": "application/json",
 }
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+class RateLimiter:
+    """Async rate limiter with minimum interval between calls."""
+
+    def __init__(self, min_interval: float):
+        self._lock = asyncio.Lock()
+        self._last: float = 0.0
+        self.min_interval = min_interval
+
+    async def wait(self) -> None:
+        async with self._lock:
+            elapsed = time.monotonic() - self._last
+            if elapsed < self.min_interval:
+                await asyncio.sleep(self.min_interval - elapsed)
+            self._last = time.monotonic()

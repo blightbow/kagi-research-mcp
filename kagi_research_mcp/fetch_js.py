@@ -354,9 +354,13 @@ async def web_fetch_js(
 
     # --- DOI fast path (after arXiv/S2, before MediaWiki) ---
     try:
-        result = await _doi_fast_path(url)
-        if result is not None:
-            return result
+        from .doi import _detect_doi_url
+        if _detect_doi_url(url):
+            if want_slicing:
+                return "Error: search/slices not supported for DOI resolver URLs."
+            result = await _doi_fast_path(url)
+            if result is not None:
+                return result
     except Exception:
         pass
 

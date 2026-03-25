@@ -4,7 +4,6 @@ import asyncio
 import logging
 import os
 import re
-import time
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -12,7 +11,7 @@ from pydantic import Field
 
 import httpx
 
-from .common import _API_HEADERS
+from .common import _API_HEADERS, RateLimiter
 from .markdown import _build_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -22,9 +21,7 @@ logger = logging.getLogger(__name__)
 # Uses a lock so concurrent MCP calls (parallel tool use) are serialized
 # and the second caller sleeps only for the remaining window.
 # ---------------------------------------------------------------------------
-_s2_rate_lock = asyncio.Lock()
-_s2_last_request: float = 0.0
-_S2_MIN_INTERVAL = 1.0  # seconds
+_s2_limiter = RateLimiter(1.0)
 
 S2_BASE_URL = "https://api.semanticscholar.org/graph/v1"
 S2_CONFIG_PATH = Path.home() / ".config" / "kagi" / "s2_api_key"
@@ -93,15 +90,10 @@ async def _s2_request(path: str, params: Optional[dict] = None) -> dict | str:
     Enforces a 1-second minimum interval between requests and retries
     with exponential backoff on HTTP 429.
     """
-    global _s2_last_request
     url = f"{S2_BASE_URL}{path}"
 
     for attempt in range(_S2_MAX_RETRIES + 1):
-        async with _s2_rate_lock:
-            elapsed = time.monotonic() - _s2_last_request
-            if elapsed < _S2_MIN_INTERVAL:
-                await asyncio.sleep(_S2_MIN_INTERVAL - elapsed)
-            _s2_last_request = time.monotonic()
+        await _s2_limiter.wait()
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -356,29 +348,24 @@ async def _fetch_s2_paper(paper_id: str) -> str:
     # Passive shelf tracking (fire-and-forget)
     fm_shelf = None
     if doi:
-        try:
-            from .shelf import _get_shelf, CitationRecord
-            authors = result.get("authors") or []
-            citation_styles = result.get("citationStyles") or {}
-            shelf = _get_shelf()
-            shelf.track(CitationRecord(
-                doi=doi,
-                title=title,
-                authors=[a.get("name", "Unknown") for a in authors],
-                year=result.get("year"),
-                venue=result.get("venue"),
-                source_tool="semantic_scholar",
-                bibtex=citation_styles.get("bibtex"),
-                citation_apa=citation_text,
-                orcids={
-                    a.get("name", ""): (a.get("externalIds") or {}).get("ORCID", "")
-                    for a in authors
-                    if (a.get("externalIds") or {}).get("ORCID")
-                },
-            ))
-            fm_shelf = shelf.status_line()
-        except Exception:
-            logger.debug("Shelf tracking failed for S2 paper %s", paper_id, exc_info=True)
+        from .shelf import _track_on_shelf, CitationRecord
+        authors = result.get("authors") or []
+        citation_styles = result.get("citationStyles") or {}
+        fm_shelf = _track_on_shelf(CitationRecord(
+            doi=doi,
+            title=title,
+            authors=[a.get("name", "Unknown") for a in authors],
+            year=result.get("year"),
+            venue=result.get("venue"),
+            source_tool="semantic_scholar",
+            bibtex=citation_styles.get("bibtex"),
+            citation_apa=citation_text,
+            orcids={
+                a.get("name", ""): (a.get("externalIds") or {}).get("ORCID", "")
+                for a in authors
+                if (a.get("externalIds") or {}).get("ORCID")
+            },
+        ))
 
     fm = _build_frontmatter({
         "title": title,
