@@ -38,6 +38,23 @@ def _detect_arxiv_url(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+_VERSION_SUFFIX_RE = re.compile(r'v\d+$')
+
+
+def _strip_version(arxiv_id: str) -> str:
+    """Strip the version suffix from an arXiv ID for DOI synthesis.
+
+    DataCite registers one DOI per paper, always versionless:
+    ``10.48550/arXiv.2501.16496`` (not ``v1``).  The Atom API always
+    returns versioned IDs (e.g. ``2501.16496v1``), so this helper is
+    needed whenever constructing DOIs from API-returned IDs.
+
+    The versioned ID should still be used for arXiv URLs (abs, pdf, html)
+    and display — arXiv recommends citing with the specific version.
+    """
+    return _VERSION_SUFFIX_RE.sub('', arxiv_id)
+
+
 # ---------------------------------------------------------------------------
 # Rate limiter — 3 seconds between requests per arXiv API terms of use.
 # ---------------------------------------------------------------------------
@@ -236,8 +253,8 @@ def _format_arxiv_paper(data: dict, *, html_available: bool = True) -> str:
     if primary or categories:
         parts.append("")
 
-    # DOIs — synthesized arXiv DOI + publisher DOI from Atom API
-    arxiv_doi = f"10.48550/arXiv.{arxiv_id}" if arxiv_id else None
+    # DOIs — synthesized arXiv DOI (versionless) + publisher DOI from Atom API
+    arxiv_doi = f"10.48550/arXiv.{_strip_version(arxiv_id)}" if arxiv_id else None
     publisher_doi = data.get("doi")  # from <arxiv:doi> — this is the PUBLISHER DOI
 
     if arxiv_doi:
@@ -332,7 +349,7 @@ def _arxiv_see_also(
     else:
         hints.append(f"ARXIV:{arxiv_id} with SemanticScholar for citation counts and body text snippets")
     if not citation_text:
-        hints.append(f"https://doi.org/10.48550/arXiv.{arxiv_id} for formatted citation")
+        hints.append(f"https://doi.org/10.48550/arXiv.{_strip_version(arxiv_id)} for formatted citation")
     return hints if len(hints) > 1 else hints[0]
 
 
@@ -364,7 +381,8 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
 
     paper = result[0]
     clean_id = paper.get("id", arxiv_id)
-    arxiv_doi = f"10.48550/arXiv.{clean_id}"
+    # DOI is always versionless; clean_id keeps the version for URLs
+    arxiv_doi = f"10.48550/arXiv.{_strip_version(clean_id)}"
 
     # Concurrent: HTML availability check + DOI citation fetch
     html_result, cite_result = await asyncio.gather(
@@ -400,11 +418,15 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
     # Passive shelf tracking (fire-and-forget)
     try:
         from .shelf import _get_shelf, CitationRecord
+        # Extract version suffix (e.g. "v7" from "1706.03762v7")
+        version_match = _VERSION_SUFFIX_RE.search(clean_id)
+        version_str = version_match.group(0) if version_match else None
         shelf = _get_shelf()
         shelf.track(CitationRecord(
             doi=arxiv_doi,
             title=paper.get("title", "Untitled"),
             authors=[a.get("name", "Unknown") for a in paper.get("authors") or []],
+            arxiv_version=version_str,
             source_tool="arxiv",
             citation_apa=citation_text,
         ))

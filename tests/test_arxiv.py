@@ -16,6 +16,7 @@ from kagi_research_mcp.arxiv import (
     _format_arxiv_list,
     _format_arxiv_paper,
     _parse_arxiv_entry,
+    _strip_version,
     _arxiv_request,
     arxiv,
 )
@@ -145,6 +146,24 @@ class TestDetectArxivUrl:
 
     def test_url_with_query_params(self):
         assert _detect_arxiv_url("https://arxiv.org/abs/1706.03762?context=cs.CL") == "1706.03762"
+
+
+# ---------------------------------------------------------------------------
+# _strip_version
+# ---------------------------------------------------------------------------
+
+class TestStripVersion:
+    def test_strips_v1(self):
+        assert _strip_version("2501.16496v1") == "2501.16496"
+
+    def test_strips_v7(self):
+        assert _strip_version("1706.03762v7") == "1706.03762"
+
+    def test_no_version_noop(self):
+        assert _strip_version("2501.16496") == "2501.16496"
+
+    def test_high_version(self):
+        assert _strip_version("1234.56789v42") == "1234.56789"
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +301,13 @@ class TestFormatArxivPaper:
         assert "## Abstract" in output
 
     def test_arxiv_doi_synthesized(self):
-        """arXiv DOI is deterministically synthesized from the ID."""
-        data = {"id": "1706.03762", "title": "Test"}
+        """arXiv DOI is deterministically synthesized from the ID, versionless."""
+        data = {"id": "1706.03762v7", "title": "Test"}
         output = _format_arxiv_paper(data)
+        # DOI must be versionless — DataCite doesn't register versioned DOIs
         assert "**arXiv DOI:** [10.48550/arXiv.1706.03762]" in output
         assert "https://doi.org/10.48550/arXiv.1706.03762" in output
+        assert "v7" not in output.split("arXiv DOI")[1].split("\n")[0]  # no version in DOI line
 
     def test_publisher_doi_shown_separately(self):
         """When publisher DOI is distinct from arXiv DOI, both are shown."""
