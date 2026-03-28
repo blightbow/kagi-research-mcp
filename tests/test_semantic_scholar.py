@@ -6,26 +6,22 @@ import respx
 
 import sys
 
-import kagi_research_mcp.semantic_scholar
+import kagi_research_mcp.semantic_scholar  # noqa: F401
 # Alias the module before importing the same-named function
 _s2_module = sys.modules["kagi_research_mcp.semantic_scholar"]
 
-from kagi_research_mcp.semantic_scholar import (
+from kagi_research_mcp.semantic_scholar import (  # noqa: E402
     S2_BASE_URL,
-    S2_CONFIG_PATH,
     _detect_s2_url,
     _fetch_s2_paper,
-    _format_author,
     _format_paper_detail,
-    _format_paper_list,
-    _format_snippets,
     _get_s2_api_key,
     _s2_request,
     semantic_scholar,
 )
-from kagi_research_mcp._pipeline import _s2_fast_path
+from kagi_research_mcp._pipeline import _s2_fast_path  # noqa: E402
 
-from .conftest import (
+from .conftest import (  # noqa: E402
     S2_PAPER_SEARCH_RESPONSE,
     S2_PAPER_DETAIL_RESPONSE,
     S2_REFERENCE_RESPONSE,
@@ -603,5 +599,4 @@ class TestS2FastPath:
         assert "Error" in result
 
 
-# Needed for Path in test_429_without_key
-from pathlib import Path
+from pathlib import Path  # noqa: E402  # needed for test_429_without_key

@@ -137,7 +137,7 @@ async def web_fetch_direct(
                 return fm + "\n\n" + _fence_content("", title=title)
         except Exception:
             pass
-        return f"Error: Footnote retrieval requires a MediaWiki page (Wikipedia, etc.)"
+        return "Error: Footnote retrieval requires a MediaWiki page (Wikipedia, etc.)"
 
     # --- arXiv fast path (before S2 — arXiv URLs get arXiv-native metadata) ---
     try:

@@ -4,13 +4,13 @@ import sys
 
 import pytest
 
-import kagi_research_mcp.semantic_scholar
+import kagi_research_mcp.semantic_scholar  # noqa: E402
 _s2_mod = sys.modules["kagi_research_mcp.semantic_scholar"]
 
-import kagi_research_mcp.doi
+import kagi_research_mcp.doi  # noqa: E402
 _doi_mod = sys.modules["kagi_research_mcp.doi"]
 
-import kagi_research_mcp.reddit
+import kagi_research_mcp.reddit  # noqa: E402, F401
 _reddit_mod = sys.modules["kagi_research_mcp.reddit"]
 
 

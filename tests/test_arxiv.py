@@ -6,10 +6,10 @@ import respx
 
 import sys
 
-import kagi_research_mcp.arxiv
+import kagi_research_mcp.arxiv  # noqa: F401
 _arxiv_module = sys.modules["kagi_research_mcp.arxiv"]
 
-from kagi_research_mcp.arxiv import (
+from kagi_research_mcp.arxiv import (  # noqa: E402
     ARXIV_API_URL,
     _detect_arxiv_url,
     _fetch_arxiv_paper,
@@ -20,7 +20,7 @@ from kagi_research_mcp.arxiv import (
     _arxiv_request,
     arxiv,
 )
-from kagi_research_mcp._pipeline import _arxiv_fast_path
+from kagi_research_mcp._pipeline import _arxiv_fast_path  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
