@@ -5,7 +5,6 @@ import pytest
 import respx
 
 from kagi_research_mcp.doi import (
-    DOI_URL_RE,
     ARXIV_DOI_RE,
     _detect_doi_url,
     _detect_ra,

@@ -1,7 +1,5 @@
 """Tests for kagi_research_mcp.markdown module."""
 
-import pytest
-
 from kagi_research_mcp.markdown import (
     md,
     html_to_markdown,
@@ -246,10 +244,10 @@ class TestBuildSectionList:
         sections = _extract_sections_from_markdown(SAMPLE_MARKDOWN_WITH_DUPLICATES)
         lines = _build_section_list(sections)
         # Both "Details" should be disambiguated with parent names
-        details_lines = [l for l in lines if "Details" in l]
+        details_lines = [line for line in lines if "Details" in line]
         assert len(details_lines) == 2
-        assert any("(Overview)" in l for l in details_lines)
-        assert any("(History)" in l for l in details_lines)
+        assert any("(Overview)" in line for line in details_lines)
+        assert any("(History)" in line for line in details_lines)
 
     def test_max_sections_cap(self):
         sections = _extract_sections_from_markdown(SAMPLE_MARKDOWN)

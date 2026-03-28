@@ -7,7 +7,6 @@ import respx
 from kagi_research_mcp.fetch_direct import web_fetch_direct
 from kagi_research_mcp.markdown import (
     _compute_slice_ancestry,
-    _extract_sections_from_markdown,
 )
 from kagi_research_mcp._pipeline import _page_cache, _wiki_cache
 
