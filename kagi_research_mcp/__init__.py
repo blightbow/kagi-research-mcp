@@ -31,23 +31,43 @@ TOOL_NAMES = {
     "research_shelf": {"code": "ResearchShelf", "desktop": "research_shelf"},
 }
 
-# Profile variables for description templates
-# code profile: PascalCase built-in tool names (WebSearch, WebFetch)
-# desktop profile: snake_case built-in tool names (web_search, web_fetch)
+# Per-profile template variables — tool names and description overrides.
+# code profile: PascalCase (WebSearch, WebFetch)
+# desktop profile: snake_case (web_search, web_fetch)
 PROFILE_VARS = {
-    "code": {"search": "WebSearch", "fetch": "WebFetch", "fetch_direct": "WebFetchDirect", "summarize": "KagiSummarize"},
-    "desktop": {"search": "web_search", "fetch": "web_fetch", "fetch_direct": "web_fetch_direct", "summarize": "kagi_summarize"},
+    "code": {
+        "search": "WebSearch",
+        "fetch": "WebFetch",
+        "fetch_direct": "WebFetchDirect",
+        "summarize": "KagiSummarize",
+        "fetch_direct_when_to_use": (
+            "Unlike WebFetch, returns unsummarized page content — use this when you need\n"
+            "to extract specific data or preserve details that summarization would discard."
+        ),
+    },
+    "desktop": {
+        "search": "web_search",
+        "fetch": "web_fetch",
+        "fetch_direct": "web_fetch_direct",
+        "summarize": "kagi_summarize",
+        "fetch_direct_when_to_use": (
+            "Unlike web_fetch, fetches from the user's device instead of proxying through\n"
+            "Anthropic's servers. Use this when web_fetch returns HTTP 403 errors (target\n"
+            "site blocking data-center IPs) or rejects the tool use with PERMISSIONS_ERROR\n"
+            "(URL not yet present in the conversation context)."
+        ),
+    },
 }
 
-# Tool description templates — profile vars are replaced per-profile.
-# Per-profile overrides in TOOL_DESCRIPTION_OVERRIDES replace the whole value.
-TOOL_DESCRIPTION_TEMPLATES = {
+# Tool descriptions — one entry per tool, with {var} placeholders resolved per-profile.
+TOOL_DESCRIPTIONS = {
     "search": """Search the web using Kagi's curated search index.
 
 Use this as an alternative to {search} when it returns few or poor quality
 results. Kagi's index is independently curated, resistant to SEO spam, and
-may surface different sources. Returns search results with snippets and
-timestamps, plus related search suggestions.
+may surface different sources. Returns compact results with snippets and
+timestamps — much lighter on context than {search}'s summarized snippets,
+making it better suited for multi-query research workflows.
 
 Supports search operators in the query string:
 - site:example.com — restrict to a domain
@@ -59,41 +79,41 @@ Supports search operators in the query string:
 - (A AND B), (A OR B) — boolean grouping, e.g. recipes (szechuan OR cantonese)
 - * — wildcard word substitution, e.g. best * ever""",
 
-    "web_fetch_sections": """Understand a document's composition by listing its section headings.
+    "web_fetch_sections": """List a document's section headings to understand page composition or plan targeted extraction.
 
-A lightweight way to survey what a page covers before committing to a full
-fetch. Returns a section tree with heading names and anchor slugs. Use this
-to plan targeted extractions — identify the sections you need, then fetch
-them individually with {fetch_direct}'s section parameter. If the URL
-contains a fragment (e.g. #section-name), resolves it against the heading
-tree.
+Returns a heading tree with anchor slugs. Use this to identify sections of
+interest, then extract them with {fetch_direct}'s section parameter. URL
+fragments (e.g. #section-name) are resolved against the heading tree.
 
-For light summarization, prefer this tool over {summarize} — the section
-tree reveals document structure and scope at minimal cost. Reserve
-{summarize} for when you need a prose summary of the content itself.""",
+For a quick sense of document scope, prefer this over {summarize} — the
+section tree reveals structure at minimal cost.
 
-    "web_fetch_direct": """Fetch a URL directly from the local machine without JavaScript rendering.
+For Reddit threads, returns a comment tree with author, score, and content
+length metadata. Comment IDs serve as section headings for targeted
+extraction with {fetch_direct}.""",
 
-Returns markdown. Use the section parameter to extract specific sections by
-heading name. For Wikipedia/MediaWiki pages, inline footnotes appear as [^N]
-markers; use the footnotes parameter to retrieve specific entries by number.
-Supports HTML, plain text, JSON, and XML content types.
+    "web_fetch_direct": """Fetch and extract unsummarized content from URLs as markdown.
 
-For long or poorly-sectioned pages, use search="terms" for BM25 keyword
-search over ~500-token slices (ranked by relevance, terms matched
-independently). Use slices=[3, 4, 5] to retrieve specific slices by index.""",
+{fetch_direct_when_to_use}
 
-    "web_fetch_js": """Fetch and interact with web content using a headless browser.
+Targeted extraction (preferred over fetching full pages):
+- section="Syntax" — extract a specific section by heading name
+- search="terms" — BM25 keyword search over ~500-token slices
+- slices=[3, 4, 5] — retrieve specific slices by index
+- footnotes=[1, 3] — retrieve specific [^N] entries from MediaWiki pages
+- URL fragments (#section-name) are resolved automatically as sections
 
-Use this when {fetch} returns incomplete content from JavaScript-heavy sites
-(SPAs, React/Vue/Angular apps, dynamically loaded content). Use the section
-parameter to extract specific sections by heading name.
+Always use this tool for Reddit URLs — built-in fetch tools cannot access
+Reddit content when proxied.
 
-For long or poorly-sectioned pages, use search="terms" for BM25 keyword
-search over ~500-token slices (ranked by relevance, terms matched
-independently). Use slices=[3, 4, 5] to retrieve specific slices by index.
-For Wikipedia/MediaWiki pages, inline footnotes appear as [^N] markers; use
-the footnotes parameter to retrieve specific entries by number.
+Supports HTML, plain text, JSON, and XML content types.""",
+
+    "web_fetch_js": """Fetch and interact with JavaScript-rendered web content.
+
+Use this when {fetch_direct} returns incomplete content from JS-heavy sites
+(SPAs, React/Vue/Angular apps, dynamically loaded content). Supports the
+same targeted extraction as {fetch_direct}: section, search, slices, and
+footnotes parameters.
 
 Supports ReAct-style interaction chains:
 1. First call: Fetch page, observe available interactive elements
@@ -158,48 +178,10 @@ persistence, use export json to save the shelf to a memory file, then import
 it in a future session.""",
 }
 
-# Per-profile description overrides (replaces the template entirely)
-TOOL_DESCRIPTION_OVERRIDES = {
-    "web_fetch_direct": {
-        "code": """Fetch a URL directly from the local machine without JavaScript rendering.
-
-Unlike {fetch}, returns full unsummarized page text as markdown. Use this
-when you need to extract specific data, compare sections, or preserve details
-that summarization would discard. Use the section parameter to extract
-specific sections by heading name. For Wikipedia/MediaWiki pages, inline
-footnotes appear as [^N] markers; use the footnotes parameter to retrieve
-specific entries by number.
-
-For long or poorly-sectioned pages, use search="terms" for BM25 keyword
-search over ~500-token slices (ranked by relevance, terms matched
-independently). Use slices=[3, 4, 5] to retrieve specific slices by index.
-
-Supports HTML, plain text, JSON, and XML content types.""",
-        "desktop": """Fetch a URL directly from the local machine without JavaScript rendering.
-
-Unlike {fetch}, fetches from the user's device instead of proxying through
-Anthropic's servers. Use this as a fallback when {fetch} returns HTTP 403
-errors (target site blocking data-center IPs) or rejects the tool use with
-PERMISSIONS_ERROR (URL not yet present in the conversation context).
-
-Returns markdown. Use the section parameter to extract specific sections by
-heading name. For Wikipedia/MediaWiki pages, inline footnotes appear as [^N]
-markers; use the footnotes parameter to retrieve specific entries by number.
-
-For long or poorly-sectioned pages, use search="terms" for BM25 keyword
-search over ~500-token slices (ranked by relevance, terms matched
-independently). Use slices=[3, 4, 5] to retrieve specific slices by index.
-
-Supports HTML, plain text, JSON, and XML content types.""",
-    },
-}
-
 
 def _build_description(tool_name: str, profile: str) -> str:
-    """Build a tool description by resolving templates and overrides."""
-    overrides = TOOL_DESCRIPTION_OVERRIDES.get(tool_name, {})
-    template = overrides.get(profile, TOOL_DESCRIPTION_TEMPLATES[tool_name])
-    return template.format(**PROFILE_VARS[profile])
+    """Build a tool description by resolving placeholders for the given profile."""
+    return TOOL_DESCRIPTIONS[tool_name].format(**PROFILE_VARS[profile])
 
 
 def main():
