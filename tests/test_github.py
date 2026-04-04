@@ -8,6 +8,7 @@ from kagi_research_mcp.github import (
     _detect_github_url,
     _github_request,
     _next_page_url,
+    _parse_citation_cff,
     _parse_owner_repo,
     _parse_owner_repo_number,
     _parse_owner_repo_path,
@@ -17,6 +18,7 @@ from kagi_research_mcp.github import (
     github,
 )
 from kagi_research_mcp._pipeline import _page_cache
+from kagi_research_mcp.shelf import _get_shelf, _reset_shelf
 
 
 @pytest.fixture(autouse=True)
@@ -488,3 +490,240 @@ class Foo:
 
     def test_sectionize_unknown_ext(self):
         assert _sectionize_code("code", ".xyz") is None
+
+
+# ---------------------------------------------------------------------------
+# CITATION.cff parsing
+# ---------------------------------------------------------------------------
+
+class TestParseCitationCff:
+    def test_preferred_citation_with_doi(self):
+        """preferred-citation DOI takes precedence over top-level."""
+        cff = {
+            "cff-version": "1.2.0",
+            "title": "My Software",
+            "doi": "10.5281/zenodo.9999",
+            "authors": [{"family-names": "Doe", "given-names": "Jane"}],
+            "preferred-citation": {
+                "type": "article",
+                "title": "My Paper",
+                "doi": "10.1234/journal.5678",
+                "authors": [
+                    {"family-names": "Doe", "given-names": "Jane"},
+                    {"family-names": "Smith", "given-names": "John"},
+                ],
+                "date-released": "2024-03-15",
+            },
+        }
+        doi, title, authors, year = _parse_citation_cff(cff)
+        assert doi == "10.1234/journal.5678"
+        assert title == "My Paper"
+        assert authors == ["Doe, Jane", "Smith, John"]
+        assert year == 2024
+
+    def test_top_level_doi_only(self):
+        """When no preferred-citation, use top-level fields."""
+        cff = {
+            "title": "My Tool",
+            "doi": "10.5281/zenodo.1111",
+            "authors": [{"family-names": "Lee", "given-names": "Alex"}],
+            "date-released": "2023-06-01",
+        }
+        doi, title, authors, year = _parse_citation_cff(cff)
+        assert doi == "10.5281/zenodo.1111"
+        assert title == "My Tool"
+        assert authors == ["Lee, Alex"]
+        assert year == 2023
+
+    def test_no_doi(self):
+        """CFF without any DOI returns None for doi."""
+        cff = {
+            "title": "Untitled Software",
+            "authors": [{"name": "ACME Corp"}],
+        }
+        doi, title, authors, year = _parse_citation_cff(cff)
+        assert doi is None
+        assert title == "Untitled Software"
+        assert authors == ["ACME Corp"]
+        assert year is None
+
+    def test_preferred_citation_inherits_top_level_doi(self):
+        """preferred-citation without DOI falls back to top-level DOI."""
+        cff = {
+            "doi": "10.5281/zenodo.5555",
+            "title": "Software",
+            "preferred-citation": {
+                "title": "The Paper",
+                "authors": [{"family-names": "Foo", "given-names": "Bar"}],
+            },
+        }
+        doi, title, authors, year = _parse_citation_cff(cff)
+        assert doi == "10.5281/zenodo.5555"
+        assert title == "The Paper"
+
+    def test_year_from_year_field(self):
+        """Year can come from a 'year' field instead of date-released."""
+        cff = {
+            "title": "Tool",
+            "preferred-citation": {
+                "title": "Paper",
+                "year": 2022,
+                "authors": [],
+            },
+        }
+        _, _, _, year = _parse_citation_cff(cff)
+        assert year == 2022
+
+    def test_author_formats(self):
+        """Various author field combinations are handled."""
+        cff = {
+            "title": "Tool",
+            "authors": [
+                {"family-names": "Doe", "given-names": "Jane"},
+                {"family-names": "Solo"},
+                {"name": "The Community"},
+                {},  # empty author
+            ],
+        }
+        _, _, authors, _ = _parse_citation_cff(cff)
+        assert authors == ["Doe, Jane", "Solo", "The Community"]
+
+
+# ---------------------------------------------------------------------------
+# Shelf integration (mocked repo action)
+# ---------------------------------------------------------------------------
+
+class TestRepoShelfIntegration:
+    @pytest.fixture(autouse=True)
+    def reset_shelf(self):
+        _reset_shelf()
+        yield
+        _reset_shelf()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_with_citation_cff_doi(self):
+        """Repo with CITATION.cff containing DOI tracks with real DOI."""
+        respx.get("https://api.github.com/repos/org/tool").mock(
+            return_value=httpx.Response(200, json={
+                "full_name": "org/tool",
+                "description": "A tool",
+                "stargazers_count": 100,
+                "forks_count": 5,
+                "open_issues_count": 0,
+                "language": "Python",
+                "license": {"spdx_id": "MIT"},
+                "topics": [],
+                "default_branch": "main",
+                "created_at": "2023-01-01T00:00:00Z",
+            })
+        )
+        respx.get("https://api.github.com/repos/org/tool/readme").mock(
+            return_value=httpx.Response(200, text="# README",
+                                        headers={"content-type": "text/plain"})
+        )
+        cff_yaml = (
+            "cff-version: 1.2.0\n"
+            "title: My Tool\n"
+            "preferred-citation:\n"
+            "  type: article\n"
+            "  title: The Paper\n"
+            "  doi: 10.1234/paper.5678\n"
+            "  authors:\n"
+            "    - family-names: Smith\n"
+            "      given-names: John\n"
+            "  date-released: 2024-01-15\n"
+        )
+        respx.get(
+            "https://raw.githubusercontent.com/org/tool/main/CITATION.cff"
+        ).mock(return_value=httpx.Response(200, text=cff_yaml))
+
+        result = await github("repo", "org/tool")
+        assert "shelf:" in result
+
+        shelf = _get_shelf()
+        records = await shelf.list_all()
+        assert len(records) == 1
+        assert records[0].doi == "10.1234/paper.5678"
+        assert records[0].title == "The Paper"
+        assert records[0].source_tool == "github"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_without_citation_cff(self):
+        """Repo without CITATION.cff tracks with synthetic github: key."""
+        respx.get("https://api.github.com/repos/org/tool").mock(
+            return_value=httpx.Response(200, json={
+                "full_name": "org/tool",
+                "description": "A tool",
+                "stargazers_count": 100,
+                "forks_count": 5,
+                "open_issues_count": 0,
+                "language": "Python",
+                "license": {"spdx_id": "MIT"},
+                "topics": [],
+                "default_branch": "main",
+                "created_at": "2023-01-01T00:00:00Z",
+            })
+        )
+        respx.get("https://api.github.com/repos/org/tool/readme").mock(
+            return_value=httpx.Response(200, text="# README",
+                                        headers={"content-type": "text/plain"})
+        )
+        respx.get(
+            "https://raw.githubusercontent.com/org/tool/main/CITATION.cff"
+        ).mock(return_value=httpx.Response(404))
+
+        result = await github("repo", "org/tool")
+        assert "shelf:" in result
+
+        shelf = _get_shelf()
+        records = await shelf.list_all()
+        assert len(records) == 1
+        assert records[0].doi == "github:org/tool"
+        assert "A tool" in records[0].title
+        assert records[0].source_tool == "github"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_citation_cff_no_doi(self):
+        """CFF without DOI uses synthetic key but real metadata."""
+        respx.get("https://api.github.com/repos/org/lib").mock(
+            return_value=httpx.Response(200, json={
+                "full_name": "org/lib",
+                "description": "A library",
+                "stargazers_count": 50,
+                "forks_count": 2,
+                "open_issues_count": 1,
+                "language": "Rust",
+                "license": {"spdx_id": "Apache-2.0"},
+                "topics": [],
+                "default_branch": "main",
+                "created_at": "2022-06-01T00:00:00Z",
+            })
+        )
+        respx.get("https://api.github.com/repos/org/lib/readme").mock(
+            return_value=httpx.Response(200, text="# Lib",
+                                        headers={"content-type": "text/plain"})
+        )
+        cff_yaml = (
+            "cff-version: 1.2.0\n"
+            "title: My Library\n"
+            "authors:\n"
+            "  - family-names: Doe\n"
+            "    given-names: Jane\n"
+            "date-released: 2022-11-01\n"
+        )
+        respx.get(
+            "https://raw.githubusercontent.com/org/lib/main/CITATION.cff"
+        ).mock(return_value=httpx.Response(200, text=cff_yaml))
+
+        await github("repo", "org/lib")
+
+        shelf = _get_shelf()
+        records = await shelf.list_all()
+        assert len(records) == 1
+        assert records[0].doi == "github:org/lib"
+        assert records[0].title == "My Library"
+        assert records[0].authors == ["Doe, Jane"]
+        assert records[0].year == 2022
