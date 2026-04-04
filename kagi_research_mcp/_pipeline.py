@@ -796,6 +796,60 @@ async def _github_fast_path(
         _page_cache.store(url, gist_desc, body, renderer="github")
         return fm + "\n\n" + _fence_content(body, title=gist_desc)
 
+    # --- Org/user profile ---
+    if match.kind == "org":
+        from .github import _github_request
+
+        org_result = await _github_request("GET", f"/orgs/{match.owner}")
+        # Fall back to user endpoint if orgs/ returns error (personal accounts)
+        is_user = False
+        if isinstance(org_result, str):
+            org_result = await _github_request("GET", f"/users/{match.owner}")
+            if isinstance(org_result, str):
+                return org_result
+            is_user = True
+        assert isinstance(org_result, dict)
+
+        repos_result = await _github_request(
+            "GET",
+            f"/{'users' if is_user else 'orgs'}/{match.owner}/repos",
+            params={"sort": "pushed", "per_page": "30"},
+        )
+        repos = repos_result if isinstance(repos_result, list) else []
+
+        name = org_result.get("name") or match.owner
+        desc = org_result.get("description") or org_result.get("bio") or ""
+        public_repos = org_result.get("public_repos", 0)
+        profile_type = "User" if is_user else "Organization"
+
+        parts = [f"**{name}** — {profile_type}"]
+        if desc:
+            parts.append(f"\n{desc}")
+        parts.append(f"\nPublic repositories: {public_repos}")
+        parts.append("")
+
+        if repos:
+            parts.append("### Recently active repositories")
+            parts.append("")
+            for r in repos:
+                stars = r.get("stargazers_count", 0)
+                lang = r.get("language") or ""
+                rdesc = r.get("description") or ""
+                star_str = f" | {stars:,} stars" if stars else ""
+                lang_str = f" | {lang}" if lang else ""
+                line = f"- **{r['name']}**{lang_str}{star_str}"
+                if rdesc:
+                    line += f" — {rdesc}"
+                parts.append(line)
+
+        fm = _build_frontmatter({
+            "source": f"https://github.com/{match.owner}",
+            "api": "GitHub",
+            "type": profile_type.lower(),
+            "trust": _TRUST_ADVISORY,
+        })
+        return fm + "\n\n" + _fence_content("\n".join(parts), title=name)
+
     # --- Wiki page ---
     if match.kind == "wiki":
         page_name = match.path or "Home"
@@ -946,10 +1000,89 @@ async def _github_fast_path(
         })
         return fm + "\n\n" + _fence_content("\n".join(parts), title=match.path)
 
+    # --- Releases ---
+    if match.kind == "releases":
+        from .github import _github_request
+
+        # Check if this is a specific tag release
+        rest = match.path
+        if rest and rest.startswith("tag/"):
+            tag = rest[4:]
+            result = await _github_request(
+                "GET",
+                f"/repos/{match.owner}/{match.repo}/releases/tags/{tag}",
+            )
+            if isinstance(result, str):
+                return result
+            assert isinstance(result, dict)
+
+            name = result.get("name") or tag
+            body = result.get("body") or ""
+            published = result.get("published_at", "")
+            author = result.get("author", {}).get("login", "")
+            prerelease = result.get("prerelease", False)
+            assets = result.get("assets", [])
+
+            parts = [f"**{name}** ({tag})"]
+            if author:
+                parts[0] += f" by @{author}"
+            if published:
+                parts[0] += f" — {published}"
+            if prerelease:
+                parts.append("*Pre-release*")
+            parts.append("")
+            if body:
+                parts.append(body)
+                parts.append("")
+            if assets:
+                parts.append("### Assets")
+                parts.append("")
+                for a in assets:
+                    size_mb = a.get("size", 0) / (1024 * 1024)
+                    dl = a.get("download_count", 0)
+                    parts.append(f"- {a['name']} ({size_mb:.1f} MB, {dl:,} downloads)")
+
+            fm = _build_frontmatter({
+                "source": f"https://github.com/{match.owner}/{match.repo}/releases/tag/{tag}",
+                "api": "GitHub",
+                "type": "release",
+                "trust": _TRUST_ADVISORY,
+            })
+            return fm + "\n\n" + _fence_content("\n".join(parts), title=name)
+
+        # List recent releases
+        result = await _github_request(
+            "GET",
+            f"/repos/{match.owner}/{match.repo}/releases",
+            params={"per_page": "20"},
+        )
+        if isinstance(result, str):
+            return result
+        assert isinstance(result, list)
+
+        if not result:
+            return f"Error: No releases found for {match.owner}/{match.repo}."
+
+        parts = []
+        for r in result:
+            tag = r.get("tag_name", "?")
+            name = r.get("name") or tag
+            published = r.get("published_at", "")[:10]
+            prerelease = " (pre-release)" if r.get("prerelease") else ""
+            parts.append(f"- **{name}** `{tag}` — {published}{prerelease}")
+
+        fm = _build_frontmatter({
+            "source": f"https://github.com/{match.owner}/{match.repo}/releases",
+            "api": "GitHub",
+            "type": "releases",
+            "hint": "Use WebFetchDirect with a specific release tag URL for full release notes and assets",
+            "trust": _TRUST_ADVISORY,
+        })
+        return fm + "\n\n" + _fence_content("\n".join(parts), title=f"{match.owner}/{match.repo} releases")
+
     # --- Unsupported paths — clean errors instead of broken HTML scrapes ---
     _UNSUPPORTED_MESSAGES = {
         "blame": "Blame view is not available via API. Use the blob URL for file content.",
-        "releases": "Releases listing is not yet supported. Use the GitHub web UI or `gh release list`.",
         "actions": "Actions workflows are not content-oriented. Use the GitHub web UI or `gh run list`.",
         "projects": "Projects boards are not yet supported. Use the GitHub web UI.",
     }
