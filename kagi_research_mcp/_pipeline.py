@@ -674,6 +674,17 @@ async def _github_fast_path(
             end = min(req_end, total_lines)
             display_lines = all_lines[start - 1:end]
             line_offset = start
+
+            # Check if the line range exceeds max_tokens budget
+            range_chars = sum(len(ln) for ln in display_lines) + len(display_lines)
+            char_budget = max_tokens * 4
+            if range_chars > char_budget:
+                return (
+                    f"Error: Line range L{req_start}-L{end} is ~{range_chars // 4} tokens "
+                    f"but max_tokens is {max_tokens}. "
+                    f"Narrow the line range or increase max_tokens."
+                )
+
             fm_entries["lines"] = f"{start}-{end} of {total_lines}"
             if req_end > total_lines:
                 fm_entries["warning"] = (
