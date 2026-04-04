@@ -293,6 +293,25 @@ def _detect_github_url(url: str) -> Optional[GitHubUrlMatch]:
     if m:
         return GitHubUrlMatch(kind="gist", gist_id=m.group(1))
 
+    # Org/user profile: github.com/{name} (single path segment, no repo)
+    _ORG_RE = re.compile(
+        r"https?://github\.com/([a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?)/?$",
+        re.IGNORECASE,
+    )
+    om = _ORG_RE.match(url)
+    if om:
+        name = om.group(1).lower()
+        # Exclude GitHub system pages
+        if name not in (
+            "settings", "orgs", "marketplace", "explore",
+            "topics", "trending", "collections", "sponsors",
+            "features", "security", "enterprise", "pricing",
+            "login", "signup", "join", "new", "about",
+            "readme", "codespaces", "copilot", "issues",
+            "pulls", "discussions", "notifications",
+        ):
+            return GitHubUrlMatch(kind="org", owner=om.group(1))
+
     # Main github.com
     m = _GITHUB_URL_RE.match(url)
     if not m:
@@ -382,8 +401,13 @@ def _detect_github_url(url: str) -> Optional[GitHubUrlMatch]:
             ref=blm.group(1), path=blm.group(2),
         )
 
+    # Releases — preserve sub-path for tag dispatch
+    if rest == "releases" or rest.startswith("releases/"):
+        sub = rest[len("releases/"):] if "/" in rest else None
+        return GitHubUrlMatch(kind="releases", owner=owner, repo=repo, path=sub)
+
     # Paths that produce broken HTML if we fall through — detect and error cleanly
-    for prefix in ("releases", "actions", "projects"):
+    for prefix in ("actions", "projects"):
         if rest == prefix or rest.startswith(prefix + "/"):
             return GitHubUrlMatch(kind=prefix, owner=owner, repo=repo)
 

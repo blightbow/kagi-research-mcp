@@ -672,18 +672,124 @@ class TestWebFetchDirectGitHubUnsupported:
         assert "Blame" in result
 
     @pytest.mark.asyncio
-    async def test_releases_returns_error(self):
-        result = await web_fetch_direct(
-            "https://github.com/owner/repo/releases"
-        )
-        assert "Error:" in result
-
-    @pytest.mark.asyncio
     async def test_actions_returns_error(self):
         result = await web_fetch_direct(
             "https://github.com/owner/repo/actions"
         )
         assert "Error:" in result
+
+
+class TestWebFetchDirectGitHubOrg:
+    """Tests for GitHub org/user profile handling."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        yield
+        _page_cache.clear()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_org_profile(self):
+        """Org URL should render profile with repo list."""
+        respx.get("https://api.github.com/orgs/myorg").mock(
+            return_value=httpx.Response(200, json={
+                "name": "My Organization",
+                "description": "Building cool stuff",
+                "public_repos": 42,
+            })
+        )
+        respx.get("https://api.github.com/orgs/myorg/repos").mock(
+            return_value=httpx.Response(200, json=[
+                {"name": "project-a", "description": "Main project", "stargazers_count": 100, "language": "Python"},
+                {"name": "project-b", "description": None, "stargazers_count": 5, "language": "Go"},
+            ])
+        )
+
+        result = await web_fetch_direct("https://github.com/myorg")
+        assert "type: organization" in result
+        assert "My Organization" in result
+        assert "project-a" in result
+        assert "100" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_user_profile_fallback(self):
+        """Personal account should fall back to /users/ endpoint."""
+        respx.get("https://api.github.com/orgs/someuser").mock(
+            return_value=httpx.Response(404, json={"message": "Not Found"})
+        )
+        respx.get("https://api.github.com/users/someuser").mock(
+            return_value=httpx.Response(200, json={
+                "name": "Some User",
+                "bio": "Developer",
+                "public_repos": 10,
+            })
+        )
+        respx.get("https://api.github.com/users/someuser/repos").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        result = await web_fetch_direct("https://github.com/someuser")
+        assert "type: user" in result
+        assert "Some User" in result
+
+    @pytest.mark.asyncio
+    async def test_system_page_not_intercepted(self):
+        """System pages like /explore should not be intercepted."""
+        from kagi_research_mcp.github import _detect_github_url
+        assert _detect_github_url("https://github.com/explore") is None
+        assert _detect_github_url("https://github.com/settings") is None
+
+
+class TestWebFetchDirectGitHubReleases:
+    """Tests for GitHub releases handling."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        yield
+        _page_cache.clear()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_releases_list(self):
+        """Releases list URL should render recent releases."""
+        respx.get("https://api.github.com/repos/owner/repo/releases").mock(
+            return_value=httpx.Response(200, json=[
+                {"tag_name": "v2.0", "name": "Version 2.0", "published_at": "2026-03-01T00:00:00Z", "prerelease": False},
+                {"tag_name": "v1.0", "name": "Version 1.0", "published_at": "2026-01-01T00:00:00Z", "prerelease": False},
+            ])
+        )
+
+        result = await web_fetch_direct("https://github.com/owner/repo/releases")
+        assert "type: releases" in result
+        assert "Version 2.0" in result
+        assert "v2.0" in result
+        assert "hint:" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_release_tag(self):
+        """Specific tag URL should render full release notes."""
+        respx.get("https://api.github.com/repos/owner/repo/releases/tags/v2.0").mock(
+            return_value=httpx.Response(200, json={
+                "name": "Version 2.0",
+                "tag_name": "v2.0",
+                "body": "## What's new\n\n- Feature A\n- Feature B",
+                "published_at": "2026-03-01T00:00:00Z",
+                "author": {"login": "maintainer"},
+                "prerelease": False,
+                "assets": [
+                    {"name": "release.tar.gz", "size": 5242880, "download_count": 1000},
+                ],
+            })
+        )
+
+        result = await web_fetch_direct("https://github.com/owner/repo/releases/tag/v2.0")
+        assert "type: release" in result
+        assert "Version 2.0" in result
+        assert "Feature A" in result
+        assert "release.tar.gz" in result
+        assert "1,000 downloads" in result
 
 
 class TestWebFetchSections:
