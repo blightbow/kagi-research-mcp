@@ -299,7 +299,7 @@ async def web_fetch_js(
     # or "wiki" (MediaWiki API, identical regardless of calling tool) are safe.
     if want_slicing:
         cached = _page_cache.get(url)
-        if cached and cached.renderer in ("js", "wiki"):
+        if cached and cached.renderer in ("js", "wiki", "github"):
             return _dispatch_slicing(
                 url, search, slices, slices_list if slices is not None else [],
                 max_tokens, source_url, warning=fragment_warning,

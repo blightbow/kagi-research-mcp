@@ -637,6 +637,44 @@ def format_code_sections(defs: list[CodeDefinition]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Comment-boundary splitting for BM25 indexing
+# ---------------------------------------------------------------------------
+# Matches issue comment headings (### ic_...) and PR file/review headings
+# (### filepath, #### rc_...).  Same approach as Reddit's _split_by_comments.
+_GH_COMMENT_HEADING_RE = re.compile(r"^(#{2,6}) (?:ic_|rc_|\S+\.\S+)", re.MULTILINE)
+
+
+def _split_github_comments(markdown: str) -> list[tuple[int, str]]:
+    """Split GitHub issue/PR markdown at comment boundaries for BM25 indexing.
+
+    The issue/PR body (everything before the first comment or file heading)
+    becomes slice 0.  Each subsequent heading and its content becomes its
+    own slice.  This produces one BM25-indexed slice per comment/file section,
+    enabling ``search=`` and ``section=`` on cached GitHub content.
+
+    Returns ``[(char_offset, chunk_text), ...]`` suitable for
+    ``_PageCache.store(presplit=...)``.
+    """
+    splits = list(_GH_COMMENT_HEADING_RE.finditer(markdown))
+
+    if not splits:
+        return [(0, markdown)]
+
+    chunks: list[tuple[int, str]] = []
+
+    first_offset = splits[0].start()
+    if first_offset > 0:
+        chunks.append((0, markdown[:first_offset].rstrip()))
+
+    for i, match in enumerate(splits):
+        start = match.start()
+        end = splits[i + 1].start() if i + 1 < len(splits) else len(markdown)
+        chunks.append((start, markdown[start:end].rstrip()))
+
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # Query parsing helpers
 # ---------------------------------------------------------------------------
 
@@ -1070,16 +1108,14 @@ async def _action_tree(
 # Action: issue
 # ---------------------------------------------------------------------------
 
-async def _action_issue(
-    query: str, limit: int, page: int,
-) -> str:
-    """Fetch an issue with comments."""
-    parsed = _parse_owner_repo_number(query)
-    if isinstance(parsed, str):
-        return parsed
-    owner, repo, number = parsed
+async def _build_issue_markdown(
+    owner: str, repo: str, number: int, limit: int, page: int,
+) -> tuple[str, str, str, dict] | str:
+    """Fetch issue + comments and build raw markdown.
 
-    # Fetch issue
+    Returns (title, raw_markdown, state, extra_fm_entries) on success,
+    or an error string on failure.
+    """
     result = await _github_request(
         "GET", f"/repos/{owner}/{repo}/issues/{number}",
     )
@@ -1096,15 +1132,10 @@ async def _action_issue(
     reactions = result.get("reactions", {})
     association = result.get("author_association", "")
 
-    fm_entries = _fm_base(f"https://github.com/{owner}/{repo}/issues/{number}")
-    fm_entries["type"] = "issue"
-    fm_entries["state"] = state
-    fm_entries["trust"] = _TRUST_ADVISORY
+    extra_fm: dict = {"type": "issue", "state": state}
     if comment_count > limit:
-        fm_entries["hint"] = f"Showing {limit} of {comment_count} comments. Use page= for more."
-    fm = _build_frontmatter(fm_entries)
+        extra_fm["hint"] = f"Showing {limit} of {comment_count} comments. Use page= for more."
 
-    # Build issue body
     parts = []
     meta = f"**{owner}/{repo}#{number}** | {state} | {comment_count} comments"
     parts.append(meta)
@@ -1114,7 +1145,6 @@ async def _action_issue(
     if labels:
         parts.append(f"Labels: {labels}")
 
-    # Reaction summary
     reaction_parts = []
     for emoji, key in [
         ("+1", "👍"), ("-1", "👎"), ("laugh", "😄"), ("hooray", "🎉"),
@@ -1130,7 +1160,6 @@ async def _action_issue(
     if body:
         parts.append(body)
 
-    # Fetch comments
     if comment_count > 0:
         parts.append("\n## Comments\n")
         comments = await _github_request(
@@ -1150,7 +1179,6 @@ async def _action_issue(
                 parts.append(f"### ic_{cid}\n")
                 parts.append(f"**@{cauthor}**{assoc_tag} — {_fmt_relative_time(ccreated)}")
 
-                # Comment reactions
                 cr_parts = []
                 for emoji, key in [
                     ("+1", "👍"), ("-1", "👎"), ("laugh", "😄"),
@@ -1166,12 +1194,32 @@ async def _action_issue(
                 parts.append(cbody)
                 parts.append("")
 
-    content = "\n".join(parts)
-    content, trunc_hint = _apply_semantic_truncation(content, 5000)
+    return title, "\n".join(parts), state, extra_fm
+
+
+async def _action_issue(
+    query: str, limit: int, page: int,
+) -> str:
+    """Fetch an issue with comments."""
+    parsed = _parse_owner_repo_number(query)
+    if isinstance(parsed, str):
+        return parsed
+    owner, repo, number = parsed
+
+    built = await _build_issue_markdown(owner, repo, number, limit, page)
+    if isinstance(built, str):
+        return built
+    title, raw_md, state, extra_fm = built
+
+    fm_entries = _fm_base(f"https://github.com/{owner}/{repo}/issues/{number}")
+    fm_entries.update(extra_fm)
+    fm_entries["trust"] = _TRUST_ADVISORY
+
+    content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
         fm_entries["hint"] = f"Use page= to load more comments (page {page + 1})"
-        fm = _build_frontmatter(fm_entries)
+    fm = _build_frontmatter(fm_entries)
     return fm + "\n\n" + _fence_content(content, title=title)
 
 
@@ -1179,16 +1227,14 @@ async def _action_issue(
 # Action: pull_request
 # ---------------------------------------------------------------------------
 
-async def _action_pull_request(
-    query: str, limit: int, page: int,
-) -> str:
-    """Fetch a pull request with diff stats and review comments."""
-    parsed = _parse_owner_repo_number(query)
-    if isinstance(parsed, str):
-        return parsed
-    owner, repo, number = parsed
+async def _build_pr_markdown(
+    owner: str, repo: str, number: int, limit: int, page: int,
+) -> tuple[str, str, str, dict] | str:
+    """Fetch PR + review comments and build raw markdown.
 
-    # Fetch PR
+    Returns (title, raw_markdown, display_state, extra_fm_entries) on success,
+    or an error string on failure.
+    """
     result = await _github_request(
         "GET", f"/repos/{owner}/{repo}/pulls/{number}",
     )
@@ -1213,11 +1259,7 @@ async def _action_pull_request(
 
     display_state = "merged" if merged else state
 
-    fm_entries = _fm_base(f"https://github.com/{owner}/{repo}/pull/{number}")
-    fm_entries["type"] = "pull_request"
-    fm_entries["state"] = display_state
-    fm_entries["trust"] = _TRUST_ADVISORY
-    fm = _build_frontmatter(fm_entries)
+    extra_fm: dict = {"type": "pull_request", "state": display_state}
 
     parts = []
     meta = f"**{owner}/{repo}#{number}** | {display_state} | {head} → {base}"
@@ -1232,18 +1274,15 @@ async def _action_pull_request(
     if body:
         parts.append(body)
 
-    # Diff stat
     parts.append("\n## Diff stat\n")
     parts.append(f"{changed_files} files changed, +{additions}, -{deletions}")
 
-    # Review comments (grouped by file)
     if review_comment_count > 0:
         review_comments = await _github_request(
             "GET", f"/repos/{owner}/{repo}/pulls/{number}/comments",
             params={"per_page": str(min(limit, 100)), "page": str(page)},
         )
         if isinstance(review_comments, list) and review_comments:
-            # Group by file path
             by_file: dict[str, list[dict]] = {}
             for rc in review_comments:
                 path = rc.get("path", "unknown")
@@ -1269,10 +1308,8 @@ async def _action_pull_request(
                     parts.append(f"#### rc_{rcid}{reply_tag}\n")
                     parts.append(f"**@{rcauthor}**{assoc_tag}{line_tag} — {_fmt_relative_time(rccreated)}")
 
-                    # Include diff hunk context (trimmed)
                     if diff_hunk and not in_reply:
                         hunk_lines = diff_hunk.strip().split("\n")
-                        # Show last few lines of context
                         display_lines = hunk_lines[-6:] if len(hunk_lines) > 6 else hunk_lines
                         parts.append("```diff")
                         parts.extend(display_lines)
@@ -1282,7 +1319,6 @@ async def _action_pull_request(
                     parts.append(rcbody)
                     parts.append("")
 
-    # Regular comments
     if comment_count > 0:
         parts.append("\n## Comments\n")
         comments = await _github_request(
@@ -1304,12 +1340,32 @@ async def _action_pull_request(
                 parts.append(cbody)
                 parts.append("")
 
-    content = "\n".join(parts)
-    content, trunc_hint = _apply_semantic_truncation(content, 5000)
+    return title, "\n".join(parts), display_state, extra_fm
+
+
+async def _action_pull_request(
+    query: str, limit: int, page: int,
+) -> str:
+    """Fetch a pull request with diff stats and review comments."""
+    parsed = _parse_owner_repo_number(query)
+    if isinstance(parsed, str):
+        return parsed
+    owner, repo, number = parsed
+
+    built = await _build_pr_markdown(owner, repo, number, limit, page)
+    if isinstance(built, str):
+        return built
+    title, raw_md, display_state, extra_fm = built
+
+    fm_entries = _fm_base(f"https://github.com/{owner}/{repo}/pull/{number}")
+    fm_entries.update(extra_fm)
+    fm_entries["trust"] = _TRUST_ADVISORY
+
+    content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
         fm_entries["hint"] = f"Use page= to load more comments (page {page + 1})"
-        fm = _build_frontmatter(fm_entries)
+    fm = _build_frontmatter(fm_entries)
     return fm + "\n\n" + _fence_content(content, title=title)
 
 
