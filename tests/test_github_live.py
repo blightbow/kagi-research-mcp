@@ -230,6 +230,62 @@ class TestGitHubRequest:
 # Link header parsing
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# CITATION.cff + shelf integration
+# ---------------------------------------------------------------------------
+
+class TestCitationCff:
+    @skip_no_token
+    @pytest.mark.asyncio
+    async def test_pytorch_has_doi(self):
+        """PyTorch CITATION.cff has a preferred-citation with DOI."""
+        from kagi_research_mcp.github import _fetch_citation_cff, _parse_citation_cff
+        cff = await _fetch_citation_cff("pytorch", "pytorch", "main")
+        assert cff is not None
+        doi, title, authors, year = _parse_citation_cff(cff)
+        assert doi is not None
+        assert doi.startswith("10.")
+        assert "PyTorch" in title
+        assert len(authors) > 0
+        assert year is not None
+
+    @skip_no_token
+    @pytest.mark.asyncio
+    async def test_scikit_learn_no_doi_but_has_metadata(self):
+        """scikit-learn CITATION.cff has preferred-citation but no DOI."""
+        from kagi_research_mcp.github import _fetch_citation_cff, _parse_citation_cff
+        cff = await _fetch_citation_cff("scikit-learn", "scikit-learn", "main")
+        assert cff is not None
+        doi, title, authors, year = _parse_citation_cff(cff)
+        assert doi is None  # no DOI in their CFF
+        assert "Scikit-learn" in title
+        assert len(authors) > 0
+
+    @skip_no_token
+    @pytest.mark.asyncio
+    async def test_flask_no_citation_cff(self):
+        """Flask has no CITATION.cff."""
+        from kagi_research_mcp.github import _fetch_citation_cff
+        cff = await _fetch_citation_cff("pallets", "flask", "main")
+        assert cff is None
+
+    @skip_no_token
+    @pytest.mark.asyncio
+    async def test_repo_action_tracks_on_shelf(self):
+        """The repo action should populate the research shelf."""
+        from kagi_research_mcp.github import github
+        from kagi_research_mcp.shelf import _get_shelf, _reset_shelf
+        _reset_shelf()
+        result = await github("repo", "pytorch/pytorch")
+        assert "shelf:" in result
+        shelf = _get_shelf()
+        records = await shelf.list_all()
+        assert len(records) == 1
+        assert records[0].doi.startswith("10.")  # real DOI from CFF
+        assert records[0].source_tool == "github"
+        _reset_shelf()
+
+
 class TestLinkHeaderParsing:
     def test_next_link(self):
         header = '<https://api.github.com/repos/x/y/issues?page=2>; rel="next", <https://api.github.com/repos/x/y/issues?page=5>; rel="last"'
