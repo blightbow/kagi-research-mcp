@@ -649,20 +649,13 @@ async def _github_fast_path(
         from .common import _LANGUAGE_MAP
         lang = _LANGUAGE_MAP.get(ext, "")
 
-        char_budget = max_tokens * 4
-        content = raw_content
-        truncated = False
-        if len(content) > char_budget:
-            content = content[:char_budget]
-            truncated = True
+        all_lines = raw_content.split("\n")
+        total_lines = len(all_lines)
 
         source = f"https://github.com/{match.owner}/{match.repo}/blob/{match.ref}/{match.path}"
         fm_entries: dict[str, object] = {"source": source, "api": "GitHub (raw)"}
         if lang:
             fm_entries["language"] = lang
-
-        all_lines = content.split("\n")
-        total_lines = len(all_lines)
 
         # Apply line range if specified (1-based inclusive)
         if line_range:
@@ -688,9 +681,14 @@ async def _github_fast_path(
                     f"but file ends at line {total_lines}"
                 )
         else:
-            if truncated:
+            # Apply max_tokens truncation only when no line range is specified
+            char_budget = max_tokens * 4
+            if len(raw_content) > char_budget:
+                truncated_content = raw_content[:char_budget]
+                display_lines = truncated_content.split("\n")
                 fm_entries["truncated"] = f"Content truncated to ~{max_tokens} tokens"
-            display_lines = all_lines
+            else:
+                display_lines = all_lines
             line_offset = 1
 
         rl_warn = _rate_limit_warning()
