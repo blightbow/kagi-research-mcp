@@ -5,7 +5,7 @@ from typing import Optional, Union
 
 import httpx
 
-from .common import _FETCH_HEADERS
+from .common import _FETCH_HEADERS, check_url_ssrf
 from .markdown import (
     html_to_markdown, _detect_js_dependent,
     _extract_sections_from_markdown, _build_section_list,
@@ -255,6 +255,11 @@ async def web_fetch_direct(
     except Exception:
         pass  # Fall through to HTTP fetch
 
+    # --- SSRF check ---
+    ssrf_error = check_url_ssrf(url)
+    if ssrf_error:
+        return ssrf_error
+
     # --- HTTP fetch ---
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
@@ -321,7 +326,7 @@ async def web_fetch_direct(
             return fm
         return f"Error: No content extracted from {url}"
 
-    fm_entries = {"title": title, "source": source_url, "warning": fragment_warning}
+    fm_entries = {"source": source_url, "warning": fragment_warning}
 
     # arXiv /html/ auto-tracking: if this is a full paper fetch, track it
     # on the shelf so it shows up alongside papers found via ArXiv/S2 tools.
@@ -341,7 +346,7 @@ async def web_fetch_direct(
 
     output = _process_markdown_sections(
         markdown_content, section_names, max_tokens, fm_entries,
-        cache_url=url, renderer="direct",
+        title=title, cache_url=url, renderer="direct",
     )
 
     # If search/slices was requested, the cache is now populated — dispatch
@@ -608,7 +613,7 @@ async def web_fetch_sections(url: str) -> str:
         if result is not None:
             return result
 
-    # --- MediaWiki fast path (uses single-entry cache) ---
+    # --- MediaWiki fast path ---
     try:
         wiki_info, wiki_page = await _cached_mediawiki_fetch(url)
         if wiki_info and wiki_page:
@@ -618,6 +623,11 @@ async def web_fetch_sections(url: str) -> str:
             )
     except Exception:
         pass
+
+    # --- SSRF check ---
+    ssrf_error = check_url_ssrf(url)
+    if ssrf_error:
+        return ssrf_error
 
     # --- HTTP fetch ---
     try:

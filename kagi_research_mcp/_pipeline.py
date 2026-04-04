@@ -450,7 +450,7 @@ async def _mediawiki_fast_path(
     """Attempt to fetch a MediaWiki page via the API, bypassing browser/httpx.
 
     Returns formatted output string on success, or None to signal fallback.
-    Uses the single-entry cache so repeated calls for the same page are free.
+    Uses the wiki cache so repeated calls for the same page are free.
     """
     wiki_info, wiki_page = await _cached_mediawiki_fetch(url)
     if not wiki_info or not wiki_page:
@@ -458,8 +458,8 @@ async def _mediawiki_fast_path(
 
     markdown_content = _mediawiki_html_to_markdown(wiki_page["html"])
 
+    title = wiki_page["title"]
     frontmatter_entries = {
-        "title": wiki_page["title"],
         "source": url,
         "site": wiki_info["sitename"] or None,
         "generator": wiki_info["generator"] or None,
@@ -469,7 +469,7 @@ async def _mediawiki_fast_path(
 
     return _process_markdown_sections(
         markdown_content, section_names, max_tokens, frontmatter_entries,
-        cache_url=cache_url, renderer="wiki",
+        title=title, cache_url=cache_url, renderer="wiki",
     )
 
 
@@ -558,7 +558,6 @@ async def _reddit_fast_path(url: str, max_tokens: int = 5000) -> Optional[str]:
     truncated, trunc_hint = _apply_semantic_truncation(full_markdown, max_tokens)
 
     fm_entries: dict[str, object] = {
-        "title": title,
         "source": url,
         "api": "Reddit (.json)",
         "trust": _TRUST_ADVISORY,
@@ -567,7 +566,7 @@ async def _reddit_fast_path(url: str, max_tokens: int = 5000) -> Optional[str]:
         fm_entries["truncated"] = trunc_hint
 
     fm = _build_frontmatter(fm_entries)
-    return fm + "\n\n" + _fence_content(truncated)
+    return fm + "\n\n" + _fence_content(truncated, title=title)
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +785,7 @@ def _process_markdown_sections(
     section_names: Optional[list[str]],
     max_tokens: int,
     frontmatter_entries: dict,
+    title: Optional[str] = None,
     cache_url: Optional[str] = None,
     renderer: Optional[str] = None,
 ) -> str:
@@ -794,15 +794,20 @@ def _process_markdown_sections(
     Common post-processing for both browser-rendered and httpx-fetched HTML.
     Returns the complete formatted output string.
 
-    When cache_url is provided, populates the page cache with the full
-    (pre-filtered) markdown so subsequent search/slices calls can use it.
-    The renderer tag ("direct" or "js") is stored with the cache entry so
-    that WebFetchJS won't reuse sparse content cached by WebFetchDirect.
+    Args:
+        title: Page title for display inside the content fence (untrusted).
+            Kept separate from frontmatter_entries because it is untrusted
+            content that must never appear in server-generated metadata.
+        cache_url: When provided, populates the page cache with the full
+            (pre-filtered) markdown so subsequent search/slices calls can
+            use it.
+        renderer: Tag stored with the cache entry ("direct" or "js") so
+            that WebFetchJS won't reuse sparse content cached by
+            WebFetchDirect.
     """
     # Populate the page cache before any filtering/truncation
     if cache_url and markdown_content:
-        title = frontmatter_entries.get("title", "Untitled")
-        _page_cache.store(cache_url, title, markdown_content, renderer=renderer)
+        _page_cache.store(cache_url, title or "Untitled", markdown_content, renderer=renderer)
 
     all_sections = _extract_sections_from_markdown(markdown_content)
     sections_requested_meta = None
@@ -829,9 +834,6 @@ def _process_markdown_sections(
     if truncation_hint and all_sections and not section_names:
         sections_available = _build_section_list(all_sections)
 
-    # Move title out of frontmatter — it goes inside the fence
-    title = frontmatter_entries.pop("title", None)
-
     frontmatter_entries["trust"] = _TRUST_ADVISORY
     frontmatter_entries["truncated"] = truncation_hint
     fm = _build_frontmatter(
@@ -856,18 +858,19 @@ def _slice_output(
     indices: list[int],
     max_tokens: int,
     fm_entries: dict,
+    title: Optional[str] = None,
     search_term: Optional[str] = None,
 ) -> str:
     """Assemble sliced output with YAML frontmatter and --- dividers.
 
     Each slice is preceded by a ``--- slice N (Ancestry) ---`` header.
     Respects max_tokens budget — stops emitting slices when exhausted.
+
+    Args:
+        title: Page title for display inside the content fence (untrusted).
     """
     assert cache.slices is not None
     assert cache.slice_ancestry is not None
-
-    # Move title out of frontmatter — it goes inside the fence
-    title = fm_entries.pop("title", None)
 
     fm_entries["trust"] = _TRUST_ADVISORY
     fm_entries["total_slices"] = len(cache.slices)
@@ -903,6 +906,7 @@ def _search_slices(
     search: str,
     max_tokens: int,
     fm_entries: dict,
+    title: Optional[str] = None,
 ) -> Optional[str]:
     """BM25 search over cached page slices.
 
@@ -922,7 +926,7 @@ def _search_slices(
         fm = _build_frontmatter(fm_entries)
         return fm + "\n\nNo matching slices found."
 
-    return _slice_output(cached, matched, max_tokens, fm_entries, search_term=search)
+    return _slice_output(cached, matched, max_tokens, fm_entries, title=title, search_term=search)
 
 
 def _get_slices(
@@ -930,6 +934,7 @@ def _get_slices(
     indices: list[int],
     max_tokens: int,
     fm_entries: dict,
+    title: Optional[str] = None,
 ) -> Optional[str]:
     """Retrieve specific slices by index from the page cache.
 
@@ -952,7 +957,7 @@ def _get_slices(
     if invalid:
         fm_entries["slices_not_found"] = invalid
 
-    return _slice_output(cached, valid, max_tokens, fm_entries)
+    return _slice_output(cached, valid, max_tokens, fm_entries, title=title)
 
 
 def _dispatch_slicing(
@@ -968,10 +973,11 @@ def _dispatch_slicing(
     cached = _page_cache.get(url)
     if not cached:
         return "Error: Page cache could not be populated for this URL."
-    fm_base = {"title": cached.title, "source": source_url, "warning": warning}
+    title = cached.title
+    fm_base = {"source": source_url, "warning": warning}
     if search is not None:
-        return _search_slices(url, search, max_tokens, fm_base) or \
+        return _search_slices(url, search, max_tokens, fm_base, title=title) or \
             "Error: Page cache unavailable."
     else:
-        return _get_slices(url, slices_list, max_tokens, fm_base) or \
+        return _get_slices(url, slices_list, max_tokens, fm_base, title=title) or \
             "Error: Page cache unavailable."

@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
-from .common import _FETCH_HEADERS
+from .common import _FETCH_HEADERS, check_url_ssrf
 from .markdown import (
     html_to_markdown, _build_frontmatter, _apply_hard_truncation,
     _fence_content, _TRUST_ADVISORY,
@@ -397,6 +397,11 @@ async def web_fetch_js(
     except Exception:
         pass  # Fall through to browser path
 
+    # --- SSRF check ---
+    ssrf_error = check_url_ssrf(url)
+    if ssrf_error:
+        return ssrf_error
+
     # --- Content-type pre-check (skip browser for non-HTML) ---
     if not actions and not wait_for:
         try:
@@ -566,7 +571,6 @@ async def web_fetch_js(
 
     # Section handling, truncation, and frontmatter via shared pipeline
     frontmatter_entries = {
-        "title": title,
         "source": source_url,
         "warning": fragment_warning,
         "browser": browser_name,
@@ -575,7 +579,7 @@ async def web_fetch_js(
     }
     output = _process_markdown_sections(
         markdown_content, section_names, max_tokens, frontmatter_entries,
-        cache_url=url, renderer="js",
+        title=title, cache_url=url, renderer="js",
     )
 
     # If search/slices was requested, cache is now populated — dispatch
