@@ -98,7 +98,7 @@ async def web_fetch_direct(
     if want_slicing:
         fm_base = {"source": source_url, "warning": fragment_warning}
         cached = _page_cache.get(url)
-        if cached and cached.renderer in ("direct", "wiki", "reddit"):
+        if cached and cached.renderer in ("direct", "wiki", "reddit", "github"):
             fm_base["title"] = cached.title or "Untitled"
             if search is not None:
                 return _search_slices(url, search, max_tokens, fm_base) or \

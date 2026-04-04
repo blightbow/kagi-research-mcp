@@ -585,7 +585,8 @@ async def _github_fast_path(url: str, max_tokens: int = 5000) -> Optional[str]:
     """
     from .github import (
         _detect_github_url, _action_repo, _action_tree,
-        _action_issue, _action_pull_request, _sectionize_code,
+        _build_issue_markdown, _build_pr_markdown,
+        _sectionize_code, _split_github_comments,
     )
     from pathlib import Path
 
@@ -682,24 +683,75 @@ async def _github_fast_path(url: str, max_tokens: int = 5000) -> Optional[str]:
 
     # --- Issue ---
     if match.kind == "issue" and match.number:
-        query = f"{match.owner}/{match.repo}#{match.number}"
-        result = await _action_issue(query, limit=100, page=1)
+        built = await _build_issue_markdown(
+            match.owner, match.repo, match.number, limit=100, page=1,
+        )
+        if isinstance(built, str):
+            return built  # error string
+        title, raw_md, state, extra_fm = built
 
-        # Cache issue markdown for search/slicing
-        if not isinstance(result, str) or not result.startswith("Error"):
-            _page_cache.store(url, f"Issue #{match.number}", result, renderer="github")
+        # Cache raw markdown with comment-boundary presplit for BM25 search
+        comment_chunks = _split_github_comments(raw_md)
+        _page_cache.store(
+            url, title, raw_md,
+            renderer="github", presplit=comment_chunks,
+        )
 
-        return result
+        # Format truncated output
+        fm_entries: dict[str, object] = {
+            "source": f"https://github.com/{match.owner}/{match.repo}/issues/{match.number}",
+            "api": "GitHub", "trust": _TRUST_ADVISORY,
+        }
+        fm_entries.update(extra_fm)
+        from .github import _rate_limit_warning as _gh_rl_warn
+        rl_warn = _gh_rl_warn()
+        if rl_warn:
+            fm_entries["warning"] = rl_warn
+        content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
+        if trunc_hint:
+            fm_entries["truncated"] = trunc_hint
+            fm_entries["hint"] = (
+                "Use search= for BM25 keyword search across comments, "
+                "or section= with a comment ID (e.g. section='ic_12345') "
+                "to extract a specific comment."
+            )
+        fm = _build_frontmatter(fm_entries)
+        return fm + "\n\n" + _fence_content(content, title=title)
 
     # --- Pull request ---
     if match.kind == "pull" and match.number:
-        query = f"{match.owner}/{match.repo}#{match.number}"
-        result = await _action_pull_request(query, limit=100, page=1)
+        built = await _build_pr_markdown(
+            match.owner, match.repo, match.number, limit=100, page=1,
+        )
+        if isinstance(built, str):
+            return built
+        title, raw_md, display_state, extra_fm = built
 
-        if not isinstance(result, str) or not result.startswith("Error"):
-            _page_cache.store(url, f"PR #{match.number}", result, renderer="github")
+        # Cache raw markdown with comment-boundary presplit for BM25 search
+        comment_chunks = _split_github_comments(raw_md)
+        _page_cache.store(
+            url, title, raw_md,
+            renderer="github", presplit=comment_chunks,
+        )
 
-        return result
+        fm_entries = {
+            "source": f"https://github.com/{match.owner}/{match.repo}/pull/{match.number}",
+            "api": "GitHub", "trust": _TRUST_ADVISORY,
+        }
+        fm_entries.update(extra_fm)
+        from .github import _rate_limit_warning as _gh_rl_warn2
+        rl_warn = _gh_rl_warn2()
+        if rl_warn:
+            fm_entries["warning"] = rl_warn
+        content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
+        if trunc_hint:
+            fm_entries["truncated"] = trunc_hint
+            fm_entries["hint"] = (
+                "Use search= for BM25 keyword search across comments and review threads, "
+                "or section= with a file path or comment ID to extract specific content."
+            )
+        fm = _build_frontmatter(fm_entries)
+        return fm + "\n\n" + _fence_content(content, title=title)
 
     # --- Repo root ---
     if match.kind == "repo":
