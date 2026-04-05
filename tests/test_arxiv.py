@@ -448,6 +448,87 @@ class TestFetchArxivPaper:
         assert "Error" in result
         assert "No paper found" in result
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_crossref_retraction_surfaces_banner_and_alert(self):
+        """When CrossRef reports the paper's publisher DOI is retracted,
+        the arXiv response surfaces a [RETRACTED] banner, alert: fm key,
+        and the shelf entry lands in the retracted bucket."""
+        from kagi_research_mcp.shelf import _reset_shelf, _get_shelf
+        _reset_shelf()
+        try:
+            respx.get(ARXIV_API_URL).mock(
+                return_value=httpx.Response(200, text=ARXIV_SINGLE_ENTRY_XML)
+            )
+            respx.head("https://arxiv.org/html/1706.03762v7").mock(
+                return_value=httpx.Response(200)
+            )
+            # Publisher DOI in the arXiv XML is 10.5555/3295222.3295349
+            respx.get(
+                "https://api.crossref.org/works/10.5555/3295222.3295349"
+            ).mock(return_value=httpx.Response(200, json={
+                "status": "ok",
+                "message-type": "work",
+                "message": {
+                    "DOI": "10.5555/3295222.3295349",
+                    "type": "journal-article",
+                    "is-referenced-by-count": 0,
+                    "updated-by": [
+                        {
+                            "updated": {"date-parts": [[2024, 1, 15]]},
+                            "DOI": "10.5555/notice.2024.001",
+                            "type": "retraction",
+                            "source": "publisher",
+                            "label": "Retraction",
+                        }
+                    ],
+                    "relation": {},
+                    "license": [],
+                },
+            }))
+            result = await _fetch_arxiv_paper("1706.03762")
+            assert "[RETRACTED]" in result
+            assert "alert:" in result
+            assert "retracted 2024-01-15" in result
+            assert "10.5555/notice.2024.001" in result
+            assert "note:" in result
+            assert "retracted shelf bucket" in result
+            # Verify shelf state
+            shelf = _get_shelf()
+            active, retracted = await shelf.counts()
+            assert active == 0
+            assert retracted == 1
+        finally:
+            _reset_shelf()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_crossref_unavailable_does_not_break(self):
+        """CrossRef enrichment is fail-open: a 500 error leaves the
+        arXiv response intact with no banner/alert."""
+        from kagi_research_mcp.shelf import _reset_shelf, _get_shelf
+        _reset_shelf()
+        try:
+            respx.get(ARXIV_API_URL).mock(
+                return_value=httpx.Response(200, text=ARXIV_SINGLE_ENTRY_XML)
+            )
+            respx.head("https://arxiv.org/html/1706.03762v7").mock(
+                return_value=httpx.Response(200)
+            )
+            respx.get(
+                "https://api.crossref.org/works/10.5555/3295222.3295349"
+            ).mock(return_value=httpx.Response(500))
+            result = await _fetch_arxiv_paper("1706.03762")
+            assert "[RETRACTED]" not in result
+            assert "alert:" not in result
+            # Paper lands on the active shelf, not retracted
+            shelf = _get_shelf()
+            active, retracted = await shelf.counts()
+            assert active == 1
+            assert retracted == 0
+        finally:
+            _reset_shelf()
+
 
 # ---------------------------------------------------------------------------
 # arxiv() tool

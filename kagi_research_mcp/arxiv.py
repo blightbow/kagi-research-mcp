@@ -375,7 +375,15 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
         arxiv_id: Bare arXiv ID (e.g. "1706.03762" or "1706.03762v5")
         _pdf_url: If True, the original URL was a /pdf/ link — add a hint.
     """
-    from .doi import fetch_formatted_citation
+    from .doi import (
+        _alt_dois_from_relations,
+        _build_alert_message,
+        _build_correction_note,
+        _relations_fm_entry,
+        fetch_crossref_metadata,
+        fetch_formatted_citation,
+    )
+    from .markdown import _format_retraction_banner
 
     result = await _arxiv_request({"id_list": arxiv_id})
     if isinstance(result, str):
@@ -387,15 +395,26 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
     clean_id = paper.get("id", arxiv_id)
     # DOI is always versionless; clean_id keeps the version for URLs
     arxiv_doi = f"10.48550/arXiv.{_strip_version(clean_id)}"
+    publisher_doi_preflight = paper.get("doi")
 
     # Concurrent: HTML availability check + DOI citation fetch
-    html_result, cite_result = await asyncio.gather(
+    #           + CrossRef REST enrichment (publisher DOI if available,
+    #             otherwise arXiv DOI as a fallback — CrossRef does serve
+    #             arXiv 10.48550/ entries, though retraction data lives
+    #             primarily on journal DOIs).
+    enrichment_doi = publisher_doi_preflight or arxiv_doi
+    html_result, cite_result, crossref_result = await asyncio.gather(
         _check_html_available(clean_id),
         fetch_formatted_citation(arxiv_doi),
+        fetch_crossref_metadata(enrichment_doi),
         return_exceptions=True,
     )
     html_available = html_result if isinstance(html_result, bool) else False
     citation_text = cite_result if isinstance(cite_result, str) else None
+    crossref_meta = crossref_result if isinstance(crossref_result, dict) else None
+    retraction = (crossref_meta or {}).get("retraction")
+    other_update = (crossref_meta or {}).get("other_update")
+    relations = (crossref_meta or {}).get("relations") or {}
 
     html_url = f"https://arxiv.org/html/{clean_id}"
     fm_entries = {
@@ -432,7 +451,11 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
     else:
         shelf_doi = arxiv_doi
         shelf_alt = []
-    fm_entries["shelf"] = await _track_on_shelf(CitationRecord(
+    # Merge CrossRef version-linkage DOIs into alt_dois for shelf dedup
+    for rd in _alt_dois_from_relations(relations):
+        if rd != shelf_doi and rd not in shelf_alt:
+            shelf_alt.append(rd)
+    shelf_result = await _track_on_shelf(CitationRecord(
         doi=shelf_doi,
         title=paper.get("title", "Untitled"),
         authors=[a.get("name", "Unknown") for a in paper.get("authors") or []],
@@ -441,10 +464,23 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
         arxiv_version=version_match.group(0) if version_match else None,
         source_tool="arxiv",
         citation_apa=citation_text,
+        retraction=retraction,
     ))
+    fm_entries["shelf"] = shelf_result.status_line
+    # Retraction / EoC / correction surfacing (fail-open: missing metadata
+    # just leaves these fm fields absent via _build_frontmatter's None skip)
+    fm_entries["alert"] = _build_alert_message(retraction, other_update)
+    fm_note = shelf_result.shelf_note or _build_correction_note(other_update)
+    # Don't clobber an existing note (PDF-URL hint): prefer the more urgent
+    # retraction/correction note; fall back to whatever was already set.
+    if fm_note:
+        fm_entries["note"] = fm_note
+    fm_entries["relation"] = _relations_fm_entry(relations)
 
     fm = _build_frontmatter(fm_entries)
     body = _format_arxiv_paper(paper, html_available=html_available)
+    if banner := _format_retraction_banner(retraction, other_update):
+        body = banner + "\n\n" + body
     if citation_text:
         body += f"\n## Citation\n\n{citation_text}\n"
     return fm + "\n\n" + body

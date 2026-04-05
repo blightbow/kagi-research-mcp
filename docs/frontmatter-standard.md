@@ -105,16 +105,42 @@ redirects from steering the browser to internal services.
 
 ## Hint Field Types
 
-Three distinct fields carry guidance.  Use the right one:
+Four distinct fields carry guidance.  Use the right one:
 
 | Field      | Scope              | Purpose                                          | Example |
 |------------|--------------------|--------------------------------------------------|---------|
 | `hint`     | Same tool          | Operational guidance for what to try next         | `Use paper action with a paper ID for full details` |
 | `see_also` | Different tool     | Cross-tool reference to a complementary resource  | `ARXIV:1706.03762v7 with SemanticScholar for citations` |
 | `note`     | Explanatory        | Why something is the way it is                    | `Section listing is not applicable for API-sourced paper data` |
+| `alert`    | Precautionary      | Retroactive invalidation of prior output          | `retracted 2020-06-05 — notice: 10.1016/S0140-6736(20)31324-6 (retraction-watch)` |
 
 `_build_frontmatter()` skips `None` values, so hints that only apply
 conditionally can be passed as `None` and will be omitted cleanly.
+
+### `alert` vs. `note` — intentional separation
+
+`note:` is additive/informational — it explains why something is the
+way it is.  `alert:` is reserved for the rare case where tool output
+**retroactively changes the trustworthiness of prior output in this
+session OR calls in-flight synthesis into question.**  Keeping `alert:`
+rare preserves its signal value; ordinary tool advice belongs on
+`note:` so `alert:` remains load-bearing.
+
+Inclusion criteria:
+
+- **Retraction** of a paper the agent is inspecting → `alert:` (the
+  fact) plus `note:` (the side-effect, e.g. "tracked in retracted shelf
+  bucket").
+- **Expression of concern** → `alert:` with softer wording ("validity
+  called into question").
+- **Correction** → stays on `note:` (amends, does not invalidate).
+- Future additions require the same retroactive-invalidation semantic;
+  this is not a bucket for loud warnings generally.
+
+The value in `alert:` uses only structurally-validated fields (dates
+constrained to ISO format, DOIs regex-checked, source values from a
+closed enum).  Free-form text from external APIs (e.g. CrossRef's
+`label` field) is rendered inside the content fence, never in `alert:`.
 
 ## List Values
 
@@ -210,6 +236,9 @@ Conditional:
 | `api`      | `arXiv` |
 | `full_text`| Pointer to `/html/` URL for full text (only when HTML render exists) |
 | `warning`  | Emitted when HTML full text is unavailable (only abstract/metadata included) |
+| `alert`    | Retraction or expression-of-concern notice from CrossRef (conditional) |
+| `note`     | Shelving side-effect (retracted bucket routing) or correction notice (conditional) |
+| `relation` | CrossRef preprint↔version linkage (conditional) |
 | `see_also` | SemanticScholar cross-reference; mentions body text snippets when HTML unavailable |
 | `shelf`    | Research shelf tracking status |
 
@@ -231,6 +260,9 @@ Conditional:
 | `title`    | Paper title |
 | `source`   | S2 paper URL |
 | `api`      | `Semantic Scholar` |
+| `alert`    | Retraction or expression-of-concern notice from CrossRef (conditional) |
+| `note`     | Shelving side-effect (retracted bucket routing) or correction notice (conditional) |
+| `relation` | CrossRef preprint↔version linkage (conditional) |
 | `see_also` | ArXiv cross-reference (when arXiv ID available) |
 | `shelf`    | Research shelf tracking status (or advisory when no DOI available) |
 
@@ -279,6 +311,24 @@ Conditional:
 | `query` | Search terms |
 | `paper` | Scoped paper ID (omitted for corpus-wide) |
 | `hint`  | Guidance to use `paper` action for metadata |
+
+### DOI fast path (via fetch tools)
+
+`doi.org` URLs intercepted by `web_fetch_direct`/`web_fetch_js` resolve
+via content negotiation (CSL-JSON) plus CrossRef REST enrichment.  arXiv
+DOIs are delegated to the arXiv handler.
+
+| Field      | Description |
+|------------|-------------|
+| `title`    | Paper title from CSL-JSON |
+| `source`   | Canonical `https://doi.org/{doi}` URL |
+| `api`      | `DOI` |
+| `trust`    | Trust advisory for fenced content |
+| `alert`    | Retraction or expression-of-concern notice from CrossRef (conditional) |
+| `note`     | Shelving side-effect (retracted bucket routing) or correction notice (conditional) |
+| `relation` | CrossRef preprint↔version linkage (conditional) |
+| `see_also` | SemanticScholar cross-reference for citation counts and references |
+| `shelf`    | Research shelf tracking status |
 
 ### GitHub tool
 

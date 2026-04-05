@@ -316,7 +316,15 @@ def _s2_see_also(
 
 async def _fetch_s2_paper(paper_id: str) -> str:
     """Fetch a single paper and return formatted markdown with frontmatter."""
-    from .doi import fetch_formatted_citation
+    from .doi import (
+        _alt_dois_from_relations,
+        _build_alert_message,
+        _build_correction_note,
+        _relations_fm_entry,
+        fetch_crossref_metadata,
+        fetch_formatted_citation,
+    )
+    from .markdown import _format_retraction_banner
 
     result = await _s2_request(f"/paper/{paper_id}", {"fields": _DETAIL_FIELDS})
     if isinstance(result, str):
@@ -329,8 +337,11 @@ async def _fetch_s2_paper(paper_id: str) -> str:
     arxiv_id = ext_ids.get("ArXiv")
     doi = ext_ids.get("DOI")
 
-    # Start citation fetch concurrently while formatting
+    # Start DOI-dependent fetches concurrently while formatting body.
+    # Citation: content-negotiation for APA text.  CrossRef enrichment:
+    # retraction/relations/license.  Both fail-open.
     cite_task = asyncio.create_task(fetch_formatted_citation(doi)) if doi else None
+    crossref_task = asyncio.create_task(fetch_crossref_metadata(doi)) if doi else None
 
     body = _format_paper_detail(result)
 
@@ -342,11 +353,27 @@ async def _fetch_s2_paper(paper_id: str) -> str:
         except Exception:
             pass
 
+    # Collect CrossRef enrichment
+    crossref_meta: Optional[dict] = None
+    if crossref_task:
+        try:
+            crossref_meta = await asyncio.wait_for(crossref_task, timeout=6.0)
+        except Exception:
+            pass
+    retraction = (crossref_meta or {}).get("retraction")
+    other_update = (crossref_meta or {}).get("other_update")
+    relations = (crossref_meta or {}).get("relations") or {}
+
+    # Prepend retraction/EoC/correction banner to body
+    if banner := _format_retraction_banner(retraction, other_update):
+        body = banner + "\n\n" + body
+
     if citation_text:
         body += f"\n## Citation\n\n{citation_text}\n"
 
     # Passive shelf tracking (fire-and-forget)
     fm_shelf: object = None
+    fm_note: Optional[str] = None
     if not doi:
         fm_shelf = "not tracked — paper has no DOI in Semantic Scholar"
     else:
@@ -362,13 +389,17 @@ async def _fetch_s2_paper(paper_id: str) -> str:
             m = re.search(r'author\s*=\s*\{(.+?)\}', citation_styles["bibtex"])
             if m:
                 author_names = [a.strip() for a in m.group(1).split(" and ")]
-        # Build alt_dois for cross-DOI dedup (arXiv ↔ journal)
-        alt_dois = []
+        # Build alt_dois for cross-DOI dedup (arXiv ↔ journal) — supplemented
+        # by version-linked DOIs from CrossRef relations.
+        alt_dois: list[str] = []
         if arxiv_id:
             arxiv_doi = f"10.48550/arXiv.{arxiv_id}"
             if arxiv_doi != doi:
                 alt_dois.append(arxiv_doi)
-        fm_shelf = await _track_on_shelf(CitationRecord(
+        for rd in _alt_dois_from_relations(relations):
+            if rd != doi and rd not in alt_dois:
+                alt_dois.append(rd)
+        shelf_result = await _track_on_shelf(CitationRecord(
             doi=doi,
             title=title,
             authors=author_names,
@@ -383,12 +414,18 @@ async def _fetch_s2_paper(paper_id: str) -> str:
                 for a in authors
                 if (a.get("externalIds") or {}).get("ORCID")
             },
+            retraction=retraction,
         ))
+        fm_shelf = shelf_result.status_line
+        fm_note = shelf_result.shelf_note
 
     fm = _build_frontmatter({
         "title": title,
         "source": source_url,
         "api": "Semantic Scholar",
+        "alert": _build_alert_message(retraction, other_update),
+        "note": fm_note or _build_correction_note(other_update),
+        "relation": _relations_fm_entry(relations),
         "see_also": _s2_see_also(arxiv_id, doi),
         "shelf": fm_shelf,
     })

@@ -499,7 +499,10 @@ class TestResearchShelfTool:
         await shelf.track(CitationRecord(doi="10.1234/test", title="Test"))
         result = await research_shelf("export", "json")
         data = json.loads(result)
-        assert "10.1234/test" in data
+        # New structured format: {"active": {...}, "retracted": {...}}
+        assert "active" in data
+        assert "retracted" in data
+        assert "10.1234/test" in data["active"]
 
     @pytest.mark.asyncio
     async def test_import_json(self):
@@ -527,6 +530,361 @@ class TestResearchShelfTool:
     async def test_unknown_action(self):
         result = await research_shelf("invalid")
         assert "Unknown action" in result
+
+
+# ---------------------------------------------------------------------------
+# Retraction bucket partitioning
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def retraction_notice():
+    """Normalized retraction dict matching fetch_crossref_metadata shape."""
+    return {
+        "notice_doi": "10.1016/s0140-6736(20)31324-6",
+        "date": "2020-06-05",
+        "source": "retraction-watch",
+        "label": "Retraction",
+    }
+
+
+class TestShelfRetractionPartition:
+    @pytest.mark.asyncio
+    async def test_new_retracted_routed_to_retracted_bucket(
+        self, shelf, sample_record, retraction_notice,
+    ):
+        """A freshly-seen retracted paper lands in the retracted bucket,
+        not the active bucket, and emits a shelving note."""
+        sample_record.retraction = retraction_notice
+        result = await shelf.track(sample_record)
+
+        active = await shelf.list_all(section="active")
+        retracted = await shelf.list_all(section="retracted")
+        assert len(active) == 0
+        assert len(retracted) == 1
+        assert retracted[0].retraction == retraction_notice
+        assert result.shelf_note is not None
+        assert "retracted shelf bucket" in result.shelf_note
+        assert "not added to active citations" in result.shelf_note
+
+    @pytest.mark.asyncio
+    async def test_active_entry_moved_to_retracted_on_reflagging(
+        self, shelf, sample_record, retraction_notice,
+    ):
+        """An entry that lives in the active bucket migrates to the
+        retracted bucket when re-inspected with retraction flag."""
+        sample_record.score = 7
+        sample_record.confirmed = True
+        sample_record.notes = "cited in intro"
+        await shelf.track(sample_record)
+
+        reflagged = CitationRecord(
+            doi=sample_record.doi,
+            title=sample_record.title,
+            retraction=retraction_notice,
+        )
+        result = await shelf.track(reflagged)
+
+        active = await shelf.list_all(section="active")
+        retracted = await shelf.list_all(section="retracted")
+        assert len(active) == 0
+        assert len(retracted) == 1
+        # User-managed fields preserved through the move
+        assert retracted[0].score == 7
+        assert retracted[0].confirmed is True
+        assert retracted[0].notes == "cited in intro"
+        assert retracted[0].retraction == retraction_notice
+        assert result.shelf_note is not None
+        assert "moved to retracted bucket" in result.shelf_note
+
+    @pytest.mark.asyncio
+    async def test_re_inspecting_retracted_entry_does_not_resurrect(
+        self, shelf, sample_record, retraction_notice,
+    ):
+        """A non-flagged re-inspection of a known-retracted paper does NOT
+        move it back to the active bucket (retraction status is sticky)."""
+        sample_record.retraction = retraction_notice
+        await shelf.track(sample_record)
+
+        # Re-inspect via a non-flagged record (e.g. arXiv path where
+        # CrossRef enrichment happened to fail or find no flag).
+        revisit = CitationRecord(
+            doi=sample_record.doi,
+            title=sample_record.title,
+            retraction=None,
+        )
+        result = await shelf.track(revisit)
+
+        active = await shelf.list_all(section="active")
+        retracted = await shelf.list_all(section="retracted")
+        assert len(active) == 0
+        assert len(retracted) == 1
+        assert retracted[0].retraction == retraction_notice
+        # No notable event — the paper was already retracted
+        assert result.shelf_note is None
+
+    @pytest.mark.asyncio
+    async def test_version_linked_alt_doi_pulls_into_retracted(
+        self, shelf, retraction_notice,
+    ):
+        """When a non-flagged record shares an alt_doi with an existing
+        retracted entry, it merges into the retracted bucket rather than
+        creating a duplicate active entry."""
+        # First: retracted journal DOI arrives with preprint as alt.
+        journal = CitationRecord(
+            doi="10.1056/nejmoa2007764",
+            title="Hydroxychloroquine",
+            alt_dois=["10.48550/arxiv.2004.00000"],
+            retraction=retraction_notice,
+        )
+        await shelf.track(journal)
+
+        # Later: the arXiv preprint gets inspected independently via
+        # arxiv.py, with no retraction flag (the arXiv path uses the
+        # arXiv DOI as primary; CrossRef may not flag it).
+        preprint = CitationRecord(
+            doi="10.48550/arxiv.2004.00000",
+            title="Hydroxychloroquine (arXiv)",
+            retraction=None,
+        )
+        result = await shelf.track(preprint)
+
+        active = await shelf.list_all(section="active")
+        retracted = await shelf.list_all(section="retracted")
+        assert len(active) == 0
+        assert len(retracted) == 1
+        # Retraction flag preserved through the merge
+        assert retracted[0].retraction == retraction_notice
+        assert result.shelf_note is None  # merge, no new event
+
+    @pytest.mark.asyncio
+    async def test_retracted_shelf_reported_in_status_line(
+        self, shelf, sample_record, sample_record_2, retraction_notice,
+    ):
+        """Status line includes retracted count when non-zero."""
+        await shelf.track(sample_record)
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record_2)
+        status = await shelf.status_line()
+        assert "1 tracked" in status
+        assert "1 retracted" in status
+
+    @pytest.mark.asyncio
+    async def test_counts_returns_both_buckets(
+        self, shelf, sample_record, sample_record_2, retraction_notice,
+    ):
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record)
+        await shelf.track(sample_record_2)
+        active, retracted = await shelf.counts()
+        assert active == 1
+        assert retracted == 1
+
+    @pytest.mark.asyncio
+    async def test_list_all_sections(
+        self, shelf, sample_record, sample_record_2, retraction_notice,
+    ):
+        await shelf.track(sample_record)
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record_2)
+        assert len(await shelf.list_all(section="active")) == 1
+        assert len(await shelf.list_all(section="retracted")) == 1
+        assert len(await shelf.list_all(section="all")) == 2
+        # Default is active
+        assert len(await shelf.list_all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_format_shelf_list_retracted_bucket(self, retraction_notice):
+        rec = CitationRecord(
+            doi="10.1234/retracted",
+            title="Bad Paper",
+            retraction=retraction_notice,
+        )
+        result = _format_shelf_list([rec], bucket="retracted")
+        assert "Bad Paper" in result
+        assert "2020-06-05" in result
+        assert "10.1016/s0140-6736(20)31324-6" in result
+        assert "retraction-watch" in result
+
+    def test_format_shelf_list_active_shows_hidden_footer(self, sample_record):
+        result = _format_shelf_list(
+            [sample_record], bucket="active", other_bucket_count=3,
+        )
+        assert "3 retracted entries hidden" in result
+
+    @pytest.mark.asyncio
+    async def test_remove_resolves_retracted_bucket(
+        self, shelf, sample_record, retraction_notice,
+    ):
+        sample_record.retraction = retraction_notice
+        await shelf.track(sample_record)
+        removed = await shelf.remove([sample_record.doi])
+        assert removed == [sample_record.doi]
+        assert len(await shelf.list_all(section="retracted")) == 0
+
+    @pytest.mark.asyncio
+    async def test_set_score_works_on_retracted_bucket(
+        self, shelf, sample_record, retraction_notice,
+    ):
+        """Retracted papers can still carry scores/notes for
+        agent-managed tracking (e.g. studying retractions)."""
+        sample_record.retraction = retraction_notice
+        await shelf.track(sample_record)
+        assert await shelf.set_score(sample_record.doi, 9)
+        retracted = await shelf.list_all(section="retracted")
+        assert retracted[0].score == 9
+
+    @pytest.mark.asyncio
+    async def test_export_bibtex_excludes_retracted_by_default(
+        self, shelf, sample_record, sample_record_2, retraction_notice,
+    ):
+        await shelf.track(sample_record)
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record_2)
+        result = await shelf.export_bibtex()
+        assert "Attention Is All You Need" in result
+        assert "Parrots" not in result  # retracted, hidden
+        assert "RETRACTED" not in result
+
+    @pytest.mark.asyncio
+    async def test_export_bibtex_includes_retracted_when_flagged(
+        self, shelf, sample_record, sample_record_2, retraction_notice,
+    ):
+        await shelf.track(sample_record)
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record_2)
+        result = await shelf.export_bibtex(include_retracted=True)
+        assert "Attention Is All You Need" in result
+        assert "Parrots" in result
+        assert "RETRACTED" in result
+        assert "10.1016/s0140-6736(20)31324-6" in result
+        assert "note = {" in result
+
+    @pytest.mark.asyncio
+    async def test_export_ris_includes_retracted_when_flagged(
+        self, shelf, sample_record_2, retraction_notice,
+    ):
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record_2)
+        result = await shelf.export_ris(include_retracted=True)
+        assert "N1  - RETRACTED" in result
+        assert "10.1016/s0140-6736(20)31324-6" in result
+
+    @pytest.mark.asyncio
+    async def test_export_json_has_both_buckets(
+        self, shelf, sample_record, sample_record_2, retraction_notice,
+    ):
+        await shelf.track(sample_record)
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record_2)
+        payload = json.loads(await shelf.export_json())
+        assert sample_record.doi in payload["active"]
+        assert sample_record_2.doi in payload["retracted"]
+        assert payload["retracted"][sample_record_2.doi]["retraction"] \
+            == retraction_notice
+
+    @pytest.mark.asyncio
+    async def test_import_json_round_trips_retracted(
+        self, shelf, sample_record, sample_record_2, retraction_notice,
+    ):
+        """Structured export → import preserves bucket placement."""
+        await shelf.track(sample_record)
+        sample_record_2.retraction = retraction_notice
+        await shelf.track(sample_record_2)
+        payload = await shelf.export_json()
+
+        fresh = ResearchShelf()
+        new_count, _ = await fresh.import_json(payload)
+        assert new_count == 2
+        assert len(await fresh.list_all(section="active")) == 1
+        assert len(await fresh.list_all(section="retracted")) == 1
+
+    @pytest.mark.asyncio
+    async def test_import_legacy_flat_format_still_works(self, shelf):
+        """Backward compatibility: old flat-dict exports still import."""
+        legacy = json.dumps({
+            "10.1234/legacy": {
+                "doi": "10.1234/legacy",
+                "title": "Legacy Export",
+            }
+        })
+        new_count, _ = await shelf.import_json(legacy)
+        assert new_count == 1
+        assert len(await shelf.list_all()) == 1
+
+
+class TestResearchShelfToolRetraction:
+    @pytest.fixture(autouse=True)
+    def _use_fresh_shelf(self):
+        _reset_shelf()
+        yield
+        _reset_shelf()
+
+    @pytest.mark.asyncio
+    async def test_list_retracted_section(self, retraction_notice):
+        shelf = _get_shelf()
+        await shelf.track(CitationRecord(
+            doi="10.1234/retracted",
+            title="Retracted Paper",
+            retraction=retraction_notice,
+        ))
+        result = await research_shelf("list", "retracted")
+        assert "Retracted Paper" in result
+        assert "2020-06-05" in result
+
+    @pytest.mark.asyncio
+    async def test_list_all_section(self, retraction_notice):
+        shelf = _get_shelf()
+        await shelf.track(CitationRecord(doi="10.1234/active", title="Active"))
+        await shelf.track(CitationRecord(
+            doi="10.1234/retracted",
+            title="Retracted",
+            retraction=retraction_notice,
+        ))
+        result = await research_shelf("list", "all")
+        assert "## Active" in result
+        assert "## Retracted" in result
+        assert "Active" in result
+        assert "Retracted" in result
+
+    @pytest.mark.asyncio
+    async def test_list_default_shows_hidden_count(self, retraction_notice):
+        shelf = _get_shelf()
+        await shelf.track(CitationRecord(doi="10.1234/active", title="Active"))
+        await shelf.track(CitationRecord(
+            doi="10.1234/retracted",
+            title="Bad",
+            retraction=retraction_notice,
+        ))
+        result = await research_shelf("list", "")
+        assert "Active" in result
+        assert "Bad" not in result  # hidden
+        assert "1 retracted entries hidden" in result
+
+    @pytest.mark.asyncio
+    async def test_list_invalid_section(self):
+        result = await research_shelf("list", "bogus")
+        assert "Unknown section" in result
+
+    @pytest.mark.asyncio
+    async def test_export_bibtex_with_retracted_flag(self, retraction_notice):
+        shelf = _get_shelf()
+        await shelf.track(CitationRecord(doi="10.1234/ok", title="OK"))
+        await shelf.track(CitationRecord(
+            doi="10.1234/bad",
+            title="Bad",
+            retraction=retraction_notice,
+            authors=["X, Y"],
+            year=2020,
+        ))
+        # Default: excludes retracted
+        plain = await research_shelf("export", "bibtex")
+        assert "OK" in plain
+        assert "Bad" not in plain
+        # With flag: includes retracted with note field
+        with_ret = await research_shelf("export", "bibtex with_retracted")
+        assert "OK" in with_ret
+        assert "Bad" in with_ret
+        assert "RETRACTED" in with_ret
 
     @pytest.mark.asyncio
     async def test_export_empty(self):

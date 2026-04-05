@@ -1030,10 +1030,12 @@ async def _track_repo_on_shelf(
     repo_data: dict,
     citation_cff: Optional[dict],
 ) -> Optional[str]:
-    """Track a GitHub repo on the research shelf.
+    """Track a GitHub repo on the research shelf and return the status line.
 
     If CITATION.cff is present, extracts DOI + metadata from it.
     Otherwise, tracks the repo with a synthetic github: identifier.
+    Returns the compact shelf status line for the frontmatter ``shelf:``
+    field, or None on any error.
     """
     from .shelf import _track_on_shelf, CitationRecord
 
@@ -1042,7 +1044,7 @@ async def _track_repo_on_shelf(
         if not doi:
             # CFF exists but has no DOI — use synthetic key
             doi = f"github:{full_name}"
-        return await _track_on_shelf(CitationRecord(
+        result = await _track_on_shelf(CitationRecord(
             doi=doi,
             title=title,
             authors=authors,
@@ -1050,6 +1052,7 @@ async def _track_repo_on_shelf(
             venue=f"GitHub ({full_name})",
             source_tool="github",
         ))
+        return result.status_line
 
     # No CITATION.cff — track with synthetic identifier and repo metadata
     license_info = repo_data.get("license") or {}
@@ -1062,13 +1065,14 @@ async def _track_repo_on_shelf(
         except (ValueError, TypeError):
             pass
 
-    return await _track_on_shelf(CitationRecord(
+    result = await _track_on_shelf(CitationRecord(
         doi=f"github:{full_name}",
         title=f"{full_name}: {description}" if description else full_name,
         year=year,
         venue="GitHub" + (f" | {license_name}" if license_name else ""),
         source_tool="github",
     ))
+    return result.status_line
 
 
 async def _action_repo(query: str) -> str:

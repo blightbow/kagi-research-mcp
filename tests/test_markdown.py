@@ -11,6 +11,7 @@ from kagi_research_mcp.markdown import (
     _apply_hard_truncation,
     _apply_semantic_truncation,
     _fence_content,
+    _format_retraction_banner,
     _FENCE_OPEN,
     _FENCE_CLOSE,
 )
@@ -694,3 +695,89 @@ class TestFenceContent:
         """Fence delimiters should carry semantic meaning without external explanation."""
         assert "untrusted" in _FENCE_OPEN
         assert "untrusted" in _FENCE_CLOSE
+
+
+# --- Retraction banner ---
+
+
+class TestFormatRetractionBanner:
+    def test_retraction_full(self):
+        banner = _format_retraction_banner(
+            {
+                "notice_doi": "10.1016/s0140-6736(20)31324-6",
+                "date": "2020-06-05",
+                "source": "retraction-watch",
+                "label": "Retraction",
+            },
+            None,
+        )
+        assert banner is not None
+        assert "[RETRACTED]" in banner
+        assert "retracted" in banner
+        assert "2020-06-05" in banner
+        assert "10.1016/s0140-6736(20)31324-6" in banner
+        assert "retraction-watch" in banner
+
+    def test_expression_of_concern(self):
+        banner = _format_retraction_banner(
+            None,
+            {
+                "type": "expression_of_concern",
+                "notice_doi": "10.1234/concerned",
+                "date": "2021-03-15",
+                "source": "publisher",
+                "label": None,
+            },
+        )
+        assert banner is not None
+        assert "[EXPRESSION OF CONCERN]" in banner
+        assert "called into question" in banner
+
+    def test_correction(self):
+        banner = _format_retraction_banner(
+            None,
+            {
+                "type": "correction",
+                "notice_doi": "10.1234/corr",
+                "date": "2022-01-01",
+                "source": "publisher",
+                "label": None,
+            },
+        )
+        assert banner is not None
+        assert "[CORRECTED]" in banner
+
+    def test_none_inputs(self):
+        assert _format_retraction_banner(None, None) is None
+
+    def test_retraction_beats_other_update(self):
+        """If both are passed, retraction takes precedence."""
+        banner = _format_retraction_banner(
+            {"notice_doi": "10.1234/ret", "date": "2020", "source": "publisher", "label": None},
+            {"type": "correction", "notice_doi": "10.1234/corr", "date": "2021", "source": "publisher"},
+        )
+        assert banner is not None
+        assert "[RETRACTED]" in banner
+        assert "[CORRECTED]" not in banner
+
+    def test_minimal_entry(self):
+        """Banner renders even when optional fields are absent."""
+        banner = _format_retraction_banner(
+            {"notice_doi": None, "date": None, "source": "unknown", "label": None},
+            None,
+        )
+        assert banner is not None
+        assert "[RETRACTED]" in banner
+
+    def test_label_rendered_inline(self):
+        banner = _format_retraction_banner(
+            {
+                "notice_doi": "10.1234/ret",
+                "date": "2020-06-05",
+                "source": "publisher",
+                "label": "Retraction of Vaswani et al.",
+            },
+            None,
+        )
+        assert banner is not None
+        assert "Retraction of Vaswani" in banner
