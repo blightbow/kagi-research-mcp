@@ -284,6 +284,55 @@ class TestSemanticScholarPaper:
         assert "see_also:" in result
         assert "ARXIV:1706.03762" in result
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_crossref_retraction_surfaces_banner_and_alert(self):
+        """An S2 paper whose DOI is reported retracted by CrossRef
+        surfaces a banner, alert: fm key, and lands in the retracted
+        shelf bucket."""
+        from kagi_research_mcp.shelf import _reset_shelf, _get_shelf
+        _reset_shelf()
+        try:
+            paper_id = "204e3073870fae3d05bcbc2f6a8e263d9b72e776"
+            respx.get(f"{S2_BASE_URL}/paper/{paper_id}").mock(
+                return_value=httpx.Response(200, json=S2_PAPER_DETAIL_RESPONSE)
+            )
+            # DOI from S2_PAPER_DETAIL_RESPONSE is 10.48550/arXiv.1706.03762
+            respx.get(
+                "https://api.crossref.org/works/10.48550/arXiv.1706.03762"
+            ).mock(return_value=httpx.Response(200, json={
+                "status": "ok",
+                "message-type": "work",
+                "message": {
+                    "DOI": "10.48550/arxiv.1706.03762",
+                    "type": "journal-article",
+                    "is-referenced-by-count": 0,
+                    "updated-by": [
+                        {
+                            "updated": {"date-parts": [[2024, 3, 1]]},
+                            "DOI": "10.5555/notice.2024.001",
+                            "type": "retraction",
+                            "source": "retraction-watch",
+                            "label": "Retraction",
+                        }
+                    ],
+                    "relation": {},
+                    "license": [],
+                },
+            }))
+            result = await _fetch_s2_paper(paper_id)
+            assert "[RETRACTED]" in result
+            assert "alert:" in result
+            assert "2024-03-01" in result
+            assert "note:" in result
+            assert "retracted shelf bucket" in result
+            shelf = _get_shelf()
+            active, retracted = await shelf.counts()
+            assert active == 0
+            assert retracted == 1
+        finally:
+            _reset_shelf()
+
 
 # ---------------------------------------------------------------------------
 # semantic_scholar — paper includes citation counts
