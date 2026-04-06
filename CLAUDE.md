@@ -27,7 +27,7 @@ uv run python3 scripts/regenerate_readme_examples.py
 
 ### Module Layout (`kagi_research_mcp/`)
 
-- **`__init__.py`** — MCP server entry point. Registers 9 tools with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.
+- **`__init__.py`** — MCP server entry point. Registers 10 tools with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.
 - **`_pipeline.py`** — Shared processing layer. Owns the fast-path detection chain, multi-entry caching (`_WikiCache` LRU, `_PageCache` 2Q), slicing, BM25 search, and section filtering.
 - **`markdown.py`** — HTML→markdown conversion via custom `TextOnlyConverter`. Section extraction with fuzzy slug matching. Content fencing. Semantic truncation for markdown, hard truncation for structured formats.
 - **`shelf.py`** — Research shelf implementation. All public methods guarded by `asyncio.Lock`.
@@ -42,11 +42,12 @@ API integration modules (each ~300-650 LOC, self-contained):
 - **`mediawiki.py`** — Wikipedia/MediaWiki API. Probes for api.php endpoint. Full-page fetch with downstream section filtering.
 - **`reddit.py`** — Reddit fast path via `old.reddit.com` `.json` endpoint. URL rewriting, comment tree parsing, section-based comment navigation. 2s rate limit.
 - **`github.py`** — GitHub REST API integration. 7 tool actions (search_issues, search_code, repo, tree, issue, pull_request, file). Three-tier auth (env → config file → unauthenticated). Per-resource rate limit tracking. URL detection for fast-path chain covering blob (with line anchors), tree, issue, PR, wiki, commit, compare, releases, org/user profiles, gist, and `raw.githubusercontent.com`. Source code sectionization via tree-sitter CodeSplitter. CITATION.cff parsing for research shelf integration. ~1600 LOC.
+- **`ietf.py`** — IETF RFC and Internet-Draft integration. 4 tool actions (rfc, search, draft, subseries). RFC Editor per-document JSON for metadata and relationship chains (obsoletes/updates). IETF Datatracker REST API for search with status/WG filtering. BibXML service for subseries (STD/BCP/FYI) resolution. Native DOI tracking (`10.17487/RFC{N}`). 1s Datatracker rate limit.
 - **`common.py`** — Shared constants: dual User-Agent strategy (browser UA for HTML, API UA for structured endpoints), `RateLimiter` class, `_LANGUAGE_MAP` for file extension → syntax highlight language.
 
 ### Key Concepts
 
-**Fast paths**: When a URL belongs to a known API-backed source (Wikipedia, arXiv, Semantic Scholar, DOI, Reddit, GitHub), the server can skip the generic HTTP-fetch-and-convert path and instead call the source's structured API directly. This is faster, yields richer metadata, and avoids scraping. The detection chain in `fetch_direct.py` tests URLs in priority order: arXiv → Semantic Scholar → DOI → Reddit → GitHub → MediaWiki → generic HTTP fallback.
+**Fast paths**: When a URL belongs to a known API-backed source (Wikipedia, arXiv, Semantic Scholar, DOI, Reddit, GitHub), the server can skip the generic HTTP-fetch-and-convert path and instead call the source's structured API directly. This is faster, yields richer metadata, and avoids scraping. The detection chain in `fetch_direct.py` tests URLs in priority order: arXiv → Semantic Scholar → IETF → DOI → Reddit → GitHub → MediaWiki → generic HTTP fallback.
 
 **Slicing**: Long pages are split into chunks (~1600-2000 chars) at semantic boundaries (headings, paragraph breaks) using `semantic-text-splitter`. Each slice records its "ancestry" — which heading hierarchy it belongs to. The slices are indexed with tantivy for BM25 keyword search, so callers can search within a cached page or request specific slices by index rather than re-fetching the whole document.
 

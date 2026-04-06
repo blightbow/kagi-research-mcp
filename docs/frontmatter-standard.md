@@ -316,7 +316,8 @@ Conditional:
 
 `doi.org` URLs intercepted by `web_fetch_direct`/`web_fetch_js` resolve
 via content negotiation (CSL-JSON) plus CrossRef REST enrichment.  arXiv
-DOIs are delegated to the arXiv handler.
+DOIs are delegated to the arXiv handler; RFC DOIs (`10.17487/RFC{N}`)
+are delegated to the IETF handler.
 
 | Field      | Description |
 |------------|-------------|
@@ -329,6 +330,65 @@ DOIs are delegated to the arXiv handler.
 | `relation` | CrossRef preprint↔version linkage (conditional) |
 | `see_also` | SemanticScholar cross-reference for citation counts and references |
 | `shelf`    | Research shelf tracking status |
+
+### IETF tool
+
+**`rfc` action:**
+
+| Field        | Description |
+|--------------|-------------|
+| `title`      | RFC title |
+| `source`     | Canonical RFC Editor URL |
+| `api`        | `IETF (RFC Editor)` |
+| `status`     | RFC status (e.g. `INTERNET STANDARD`, `PROPOSED STANDARD`, `INFORMATIONAL`, `UNKNOWN`) |
+| `doi`        | Native RFC DOI (`10.17487/RFC{N}`) |
+| `full_text`  | Pointer to `.html` URL for full text with search/slices |
+| `see_also`   | SemanticScholar cross-reference for citation data |
+| `subseries`  | STD/BCP/FYI membership label (conditional, from `see_also` field) |
+| `obsoletes`  | List of RFCs this one obsoletes (conditional) |
+| `obsoleted_by` | List of RFCs that obsolete this one (conditional) |
+| `updates`    | List of RFCs this one updates (conditional) |
+| `updated_by` | List of RFCs that update this one (conditional) |
+| `note`       | "RFC predates the current status system" when `pub_status` is `UNKNOWN` (conditional) |
+| `shelf`      | Research shelf tracking status |
+
+**`search` action:**
+
+| Field          | Description |
+|----------------|-------------|
+| `api`          | `IETF (Datatracker)` |
+| `action`       | `search` |
+| `query`        | Search terms |
+| `total_results`| Total result count |
+| `hint`         | Guidance to use `rfc` action for full details |
+
+**`draft` action:**
+
+| Field    | Description |
+|----------|-------------|
+| `title`  | Draft title |
+| `source` | Datatracker URL |
+| `api`    | `IETF (Datatracker)` |
+| `state`  | IESG or document state |
+| `see_also` | Pointer to archived HTML for full text (conditional) |
+
+**`subseries` action:**
+
+| Field          | Description |
+|----------------|-------------|
+| `source`       | RFC Editor info page URL |
+| `api`          | `IETF (BibXML)` |
+| `subseries`    | Subseries label (e.g. `BCP 14`, `STD 97`) |
+| `member_count` | Number of constituent RFCs |
+| `see_also`     | Guidance to use `rfc` action for member details |
+
+**IETF fast path (via fetch tools):**
+
+`rfc-editor.org` and `datatracker.ietf.org` URLs intercepted by
+`web_fetch_direct` produce the same frontmatter as the corresponding
+IETF tool actions.  RFC DOIs (`10.17487/RFC{N}`) resolved via `doi.org`
+are delegated to the IETF handler rather than generic DOI content
+negotiation, preserving relationship chains and subseries metadata.
 
 ### GitHub tool
 

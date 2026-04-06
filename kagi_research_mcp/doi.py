@@ -704,6 +704,12 @@ async def _fetch_doi_paper(doi: str) -> str:
         arxiv_id = arxiv_match.group(1)
         return await _fetch_arxiv_paper(arxiv_id)
 
+    # Delegate RFC DOIs to the IETF handler
+    rfc_match = re.match(r'^10\.17487/RFC(\d+)$', doi, re.IGNORECASE)
+    if rfc_match:
+        from .ietf import _fetch_rfc_paper
+        return await _fetch_rfc_paper(int(rfc_match.group(1)))
+
     # Concurrent: CSL-JSON metadata + formatted APA citation + RA detection
     #            + CrossRef REST enrichment (retraction / relations / license)
     csl_result, cite_result, ra_result, crossref_result = await asyncio.gather(

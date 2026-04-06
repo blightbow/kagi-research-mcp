@@ -16,6 +16,9 @@ _reddit_mod = sys.modules["kagi_research_mcp.reddit"]
 import kagi_research_mcp.github  # noqa: E402, F401
 _github_mod = sys.modules["kagi_research_mcp.github"]
 
+import kagi_research_mcp.ietf  # noqa: E402, F401
+_ietf_mod = sys.modules["kagi_research_mcp.ietf"]
+
 
 @pytest.fixture(autouse=True)
 def _disable_s2_rate_limit(monkeypatch):
@@ -41,6 +44,12 @@ def _disable_reddit_rate_limit(monkeypatch):
 def _disable_github_rate_limit(monkeypatch):
     """Disable the 1s GitHub rate limiter in unit tests."""
     monkeypatch.setattr(_github_mod._github_limiter, "min_interval", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _disable_ietf_rate_limit(monkeypatch):
+    """Disable the 1s Datatracker rate limiter in unit tests."""
+    monkeypatch.setattr(_ietf_mod._datatracker_limiter, "min_interval", 0.0)
 
 
 # Sample markdown document used across multiple test modules

@@ -15,7 +15,7 @@ from .markdown import (
 )
 from ._pipeline import (
     _extract_fragment, _normalize_sections, _resolve_fragment_source,
-    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _doi_fast_path, _reddit_fast_path, _github_fast_path,
+    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _ietf_fast_path, _doi_fast_path, _reddit_fast_path, _github_fast_path,
     _process_markdown_sections,
     _cached_mediawiki_fetch,
     _page_cache, _search_slices, _get_slices,
@@ -187,7 +187,22 @@ async def web_fetch_direct(
     except Exception:
         pass
 
-    # --- DOI fast path (after arXiv/S2, before MediaWiki) ---
+    # --- IETF fast path (before DOI — catches rfc-editor.org and datatracker URLs) ---
+    try:
+        from .ietf import _detect_ietf_url
+        if _detect_ietf_url(url):
+            if want_slicing:
+                return (
+                    "Error: search/slices not supported for IETF metadata URLs. "
+                    "Use WebFetchDirect with the RFC's .html URL for full text with search/slices."
+                )
+            result = await _ietf_fast_path(url)
+            if result is not None:
+                return result
+    except Exception:
+        pass
+
+    # --- DOI fast path (after arXiv/S2/IETF, before MediaWiki) ---
     try:
         from .doi import _detect_doi_url
         if _detect_doi_url(url):
@@ -582,6 +597,19 @@ async def web_fetch_sections(url: str) -> str:
             "api": "Semantic Scholar",
             "note": "Section listing is not applicable for API-sourced paper data. "
                     "Use WebFetchDirect or SemanticScholar tool for full content.",
+        })
+        return fm
+
+    # --- IETF fast path (sections: redirect to HTML for section browsing) ---
+    from .ietf import _detect_ietf_url
+    ietf_match = _detect_ietf_url(url)
+    if ietf_match and ietf_match.get("type") == "rfc":
+        n = ietf_match["number"]
+        fm = _build_frontmatter({
+            "source": original_url,
+            "api": "IETF (RFC Editor)",
+            "note": f"Use WebFetchDirect with https://www.rfc-editor.org/rfc/rfc{n}.html "
+                    "for full RFC text with section-aware browsing.",
         })
         return fm
 

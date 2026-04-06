@@ -516,6 +516,26 @@ async def _s2_fast_path(url: str) -> Optional[str]:
     return result
 
 
+async def _ietf_fast_path(url: str) -> Optional[str]:
+    """Attempt to fetch an IETF RFC or Internet-Draft via structured APIs.
+
+    Returns formatted content on success, or None if not an IETF URL.
+    Once matched, always returns a string (even errors) to prevent
+    fallback to generic HTTP fetch.
+    """
+    from .ietf import _detect_ietf_url, _fetch_rfc_paper, _fetch_draft
+
+    match = _detect_ietf_url(url)
+    if not match:
+        return None
+
+    if match["type"] == "rfc":
+        return await _fetch_rfc_paper(match["number"])
+    if match["type"] == "draft":
+        return await _fetch_draft(match["name"])
+    return None
+
+
 async def _doi_fast_path(url: str) -> Optional[str]:
     """Attempt to resolve a doi.org URL via content negotiation.
 

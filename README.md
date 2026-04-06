@@ -1,6 +1,6 @@
 # Kagi Research MCP
 
-A research synthesis pipeline for MCP. Enables agents to perform targeted content extraction from websites and research papers. Integrates with the APIs for Kagi Search, Kagi Summarize, Semantic Scholar, arXiv, GitHub, MediaWiki, and Reddit. It is primarily designed for Claude Code and Claude Desktop, but should be adaptable to most needs.
+A research synthesis pipeline for MCP. Enables agents to perform targeted content extraction from websites and research papers. Integrates with the APIs for Kagi Search, Kagi Summarize, Semantic Scholar, arXiv, IETF, GitHub, MediaWiki, and Reddit. It is primarily designed for Claude Code and Claude Desktop, but should be adaptable to most needs.
 
 ## Attribution
 
@@ -528,6 +528,111 @@ When a retraction is detected:
 
 The same enrichment call also extracts preprint-to-version linkage (`is-preprint-of`, `has-version`) and license metadata from CrossRef at no additional cost. Version-linked DOIs are fed into the shelf's alt_dois for cross-DOI deduplication, improving preprint/journal merge accuracy.
 
+### IETF RFC handling
+
+IETF RFC URLs (`rfc-editor.org`, `datatracker.ietf.org`) are intercepted by the fetch tools and served via the RFC Editor's per-document JSON API, returning structured metadata instead of scraping the landing page. This gives you authors, status, DOI, full relationship chains (obsoletes/obsoleted-by/updates/updated-by), subseries membership, and available formats in a single call.
+
+A standalone IETF tool provides 4 actions: `rfc` (single lookup), `search` (Datatracker keyword search with status/WG filtering), `draft` (Internet-Draft lookup), and `subseries` (resolve STD/BCP/FYI bundles to their constituent RFCs via the IETF BibXML service). Both APIs are unauthenticated and free.
+
+RFCs have native DOIs (`10.17487/RFC{N}`) and are automatically tracked on the research shelf when inspected. RFC DOIs passed to the fetch tools via `doi.org` URLs are delegated to the IETF handler, so the full metadata experience (relationship chains, subseries) is preserved even when the DOI form is used.
+
+RFCs with `pub_status: "UNKNOWN"` (predating the current status system) receive a frontmatter note advising that they should be treated as informational at best.
+
+**RFC lookup** — structured metadata via RFC Editor JSON:
+
+```
+>>> ietf(action="rfc", query="9110")
+---
+title: HTTP Semantics
+source: https://www.rfc-editor.org/rfc/rfc9110
+api: IETF (RFC Editor)
+status: INTERNET STANDARD
+doi: 10.17487/RFC9110
+shelf: 1 tracked (0 confirmed) — use ResearchShelf to review
+full_text: Use WebFetchDirect with https://www.rfc-editor.org/rfc/rfc9110.html for full RFC text with search/slices
+see_also: Use SemanticScholar with DOI:10.17487/RFC9110 for citation data
+subseries: STD 97
+obsoletes:
+  - RFC2818
+  - RFC7230
+  - RFC7231
+  - RFC7232
+  - RFC7233
+  - RFC7235
+  - RFC7538
+  - RFC7615
+  - RFC7694
+updates: RFC3864
+---
+
+┌─ untrusted content
+│
+│ # RFC 9110: HTTP Semantics
+│
+│ **Authors:** R. Fielding, Ed., M. Nottingham, Ed., J. Reschke, Ed.
+│ **Date:** June 2022
+│ **Status:** INTERNET STANDARD
+│ **Working Group:** HTTP
+│ **Pages:** 194
+│ **Origin:** draft-ietf-httpbis-semantics-19
+│
+│ ## Abstract
+│
+│ The Hypertext Transfer Protocol (HTTP) is a stateless
+│ application-level protocol for distributed, collaborative, hypertext
+│ information systems...
+│
+│ ## Citation
+│
+│ Fielding, R., Nottingham, M., & Reschke, J. (Eds.). (2022).
+│ HTTP Semantics. RFC Editor. https://doi.org/10.17487/rfc9110
+│
+└─ untrusted content
+```
+
+**Subseries resolution** — resolve STD/BCP/FYI to constituent RFCs via BibXML:
+
+```
+>>> ietf(action="subseries", query="BCP14")
+---
+source: https://www.rfc-editor.org/info/bcp14
+api: IETF (BibXML)
+subseries: BCP 14
+member_count: 2
+see_also: Use IETF tool with rfc action for details on any member RFC
+---
+
+┌─ untrusted content
+│
+│ # BCP 14
+│
+│ - **RFC 2119**: Key words for use in RFCs to Indicate Requirement Levels (March 1997)
+│   Authors: S. Bradner
+│ - **RFC 8174**: Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words (May 2017)
+│   Authors: B. Leiba
+│
+└─ untrusted content
+```
+
+**RFC search** — keyword search with optional status and working group filters:
+
+```
+>>> ietf(action="search", query="transport layer security", limit=3)
+---
+api: IETF (Datatracker)
+action: search
+query: transport layer security
+total_results: 99
+hint: Use rfc action for full details on any result
+---
+
+1. **RFC 6698**: The DNS-Based Authentication of Named Entities (DANE) Transport Layer Security (TLS) Protocol: TLSA, 37p
+2. **RFC 7919**: Negotiated Finite Field Diffie-Hellman Ephemeral Parameters for Transport Layer Security (TLS), 29p
+3. **RFC 2712**: Addition of Kerberos Cipher Suites to Transport Layer Security (TLS), 7p
+
+*96 more results available (use offset=3)*
+```
+
 ### Reddit handling
 
 Reddit URLs are intercepted and rewritten to use `old.reddit.com`'s unauthenticated `.json` endpoint, bypassing both the login wall on `www.reddit.com` and the monetised official API (which requires OAuth approval and enterprise-tier pricing). Any `reddit.com`, `old.reddit.com`, `new.reddit.com`, `np.reddit.com`, or `redd.it` URL is automatically detected and rewritten.
@@ -748,7 +853,7 @@ shelf: tracked as 10.1145/3620665.3640366 — use ResearchShelf to review
 
 ### Research Shelf
 
-The research shelf is an in-memory document tracker that passively records papers as they are inspected through the ArXiv tool, the Semantic Scholar tool, and DOI resolution. It fills a gap in the research workflow: without it, maintaining a list of consulted papers requires the LLM to reconstruct citations from memory at session end, which is both error-prone and token-expensive.
+The research shelf is an in-memory document tracker that passively records papers as they are inspected through the ArXiv tool, the Semantic Scholar tool, DOI resolution, and the IETF tool. It fills a gap in the research workflow: without it, maintaining a list of consulted papers requires the LLM to reconstruct citations from memory at session end, which is both error-prone and token-expensive.
 
 Papers are tracked automatically on individual paper lookups (not searches). The shelf uses DOI as its primary key, with cross-DOI deduplication so the same paper discovered via both arXiv and a journal DOI merges into a single entry. When multiple DOIs exist for the same work (preprint + journal), the most authoritative DOI is preferred as the primary key per academic citation best practice (journal > bioRxiv/medRxiv > arXiv). Fetching an arXiv `/html/` URL via `web_fetch_direct` also auto-tracks the paper, closing the gap when full paper text is being read directly.
 
@@ -873,8 +978,8 @@ The `--profile` argument adjusts tool names and descriptions for the target clie
 
 | Profile | Target | Tool Names |
 |---------|--------|------------|
-| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_direct`, `web_fetch_sections`, `semantic_scholar`, `arxiv`, `github` |
-| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS`, `WebFetchDirect`, `WebFetchSections`, `SemanticScholar`, `ArXiv`, `GitHub` |
+| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_direct`, `web_fetch_sections`, `semantic_scholar`, `arxiv`, `github`, `ietf` |
+| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS`, `WebFetchDirect`, `WebFetchSections`, `SemanticScholar`, `ArXiv`, `GitHub`, `IETF` |
 
 The `desktop` profile (snake_case) is the default as it aligns with MCP ecosystem conventions. Claude Code's PascalCase naming is the exception, not the norm.
 
@@ -891,6 +996,7 @@ web_fetch_js       | WebFetchJS            | Use Playwright to render a headless
 semantic_scholar   | SemanticScholar       | Search and retrieve academic paper data from Semantic Scholar (search, paper details, references, authors, body text snippets)
 arxiv              | ArXiv                 | Search and retrieve academic papers from arXiv (search with field-prefix syntax, paper details, category browsing)
 github             | GitHub                | Search and retrieve code, issues, pull requests, commits, and comparisons from GitHub (7 actions: search_issues, search_code, repo, tree, issue, pull_request, file)
+ietf               | IETF                  | Search and retrieve IETF RFCs and Internet-Drafts (4 actions: rfc, search, draft, subseries)
 kagi_summarize     | KagiSummarize         | Summarize URLs or text (supports PDFs, YouTube, audio)
 
 ### fetch tool capabilities (common)
@@ -904,6 +1010,7 @@ The fetch tools share the following features:
 - **Whitespace normalization** - Non-breaking spaces, HTML entities (`&nbsp;`), and exotic Unicode whitespace in headings and titles are normalized to plain ASCII spaces for reliable section matching.
 - **arXiv fast path** - `arxiv.org/abs/` and `arxiv.org/pdf/` URLs are intercepted and served via the arXiv Atom API, returning structured metadata (authors with affiliations, categories, DOI, journal refs, version history). `/html/` URLs are deliberately excluded so they fall through to HTTP fetch for full paper text with BM25 slicing support. Frontmatter includes hints to the `/html/` URL and SemanticScholar cross-reference.
 - **Semantic Scholar fast path** - `semanticscholar.org/paper/` URLs are intercepted and served via the S2 Graph API, bypassing CAPTCHA-blocked web pages. Returns structured paper data with YAML frontmatter.
+- **IETF fast path** - `rfc-editor.org/rfc/rfc{N}` and `datatracker.ietf.org/doc/{name}` URLs are intercepted and served via the RFC Editor JSON API (for RFCs) or Datatracker convenience endpoint (for Internet-Drafts). Returns structured metadata with relationship chains, subseries membership, and DOI. RFC DOIs (`10.17487/RFC{N}`) resolved via `doi.org` are delegated to the IETF handler.
 - **Reddit fast path** - `reddit.com`, `old.reddit.com`, and `redd.it` URLs are rewritten to `old.reddit.com` and fetched via the unauthenticated `.json` endpoint, bypassing Reddit's login wall and monetised API. Comment threads are rendered with comment IDs as section headings, enabling `section=` extraction of individual comments and BM25 search across the full thread. `web_fetch_sections` returns the comment tree with author, score, and content length metadata.
 - **GitHub fast path** - `github.com` and `raw.githubusercontent.com` URLs are intercepted and served via the GitHub REST API, bypassing GitHub's JavaScript-heavy SPA. Supported URL types:
   - **Blob** (`/blob/{ref}/{path}`) — fetched from `raw.githubusercontent.com` with line numbers, cached with AST-aware presplit via tree-sitter [CodeSplitter](https://docs.rs/text-splitter/latest/text_splitter/struct.CodeSplitter.html). Line anchor fragments (`#L45`, `#L45-L100`) slice the output to just those lines.

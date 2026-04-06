@@ -11,6 +11,7 @@ from .fetch_direct import web_fetch_direct, web_fetch_sections
 from .semantic_scholar import semantic_scholar
 from .arxiv import arxiv
 from .github import github
+from .ietf import ietf
 from .shelf import research_shelf, _get_shelf
 
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +32,7 @@ TOOL_NAMES = {
     "arxiv": {"code": "ArXiv", "desktop": "arxiv"},
     "research_shelf": {"code": "ResearchShelf", "desktop": "research_shelf"},
     "github": {"code": "GitHub", "desktop": "github"},
+    "ietf": {"code": "IETF", "desktop": "ietf"},
 }
 
 # Per-profile template variables — tool names and description overrides.
@@ -187,10 +189,31 @@ Query formats vary by action:
 Authentication: Set GITHUB_TOKEN env var or create ~/.config/kagi/github_token
 for 5000 req/hr (vs 60/hr unauthenticated). No special scopes needed for public repos.""",
 
+    "ietf": """Search and retrieve IETF RFCs, Internet-Drafts, and standards-track documents.
+
+Use this for RFC lookups: get RFC details (abstract, authors, status, relationship
+chains), search RFCs by keyword, look up Internet-Drafts, or resolve STD/BCP/FYI
+subseries bundles. RFC Editor and Datatracker URLs are also handled automatically
+by {fetch_direct}.
+
+Actions: rfc, search, draft, subseries.
+
+Query formats:
+- rfc: RFC number (e.g. "9110"), RFC URL, or DOI (10.17487/RFC9110)
+- search: keywords for title search via IETF Datatracker
+- draft: Internet-Draft name (e.g. "draft-ietf-httpbis-semantics") or URL
+- subseries: subseries identifier (e.g. "STD97", "BCP14", "FYI36")
+
+Optional filters for search: status (ps, std, bcp, inf, exp, hist), wg (working
+group acronym like "httpbis" or "tls").
+
+RFCs have native DOIs (10.17487/RFC{{N}}) and are automatically tracked on the
+research shelf when inspected.""",
+
     "research_shelf": """Manage the research shelf — an in-memory tracker for papers inspected during research.
 
-Papers are automatically added when you use ArXiv, SemanticScholar, or DOI
-tools to inspect individual papers. Use this tool to review, score, confirm,
+Papers are automatically added when you use ArXiv, SemanticScholar, DOI, or IETF
+tools to inspect individual papers or RFCs. Use this tool to review, score, confirm,
 or remove tracked papers, and to export citations in BibTeX or RIS format.
 
 The shelf survives context compaction within the same session. For cross-session
@@ -226,6 +249,7 @@ def main():
         ("arxiv", arxiv),
         ("research_shelf", research_shelf),
         ("github", github),
+        ("ietf", ietf),
     ]
     for internal_name, func in tools:
         name = TOOL_NAMES[internal_name][args.profile]
