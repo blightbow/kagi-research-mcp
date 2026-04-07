@@ -1,26 +1,33 @@
-"""Shared fixtures for kagi-research-mcp tests."""
+"""Shared fixtures for parkour-mcp tests."""
 
 import sys
 
 import pytest
 
-import kagi_research_mcp.semantic_scholar  # noqa: E402
-_s2_mod = sys.modules["kagi_research_mcp.semantic_scholar"]
+from parkour_mcp.common import init_tool_names
 
-import kagi_research_mcp.doi  # noqa: E402
-_doi_mod = sys.modules["kagi_research_mcp.doi"]
+# Initialize tool display names once for the entire test session.
+# Uses "code" profile so tool_name() calls in hint/note strings resolve
+# to PascalCase names (WebFetchExact, SemanticScholar, etc.).
+init_tool_names("code")
 
-import kagi_research_mcp.reddit  # noqa: E402, F401
-_reddit_mod = sys.modules["kagi_research_mcp.reddit"]
+import parkour_mcp.semantic_scholar  # noqa: E402
+_s2_mod = sys.modules["parkour_mcp.semantic_scholar"]
 
-import kagi_research_mcp.github  # noqa: E402, F401
-_github_mod = sys.modules["kagi_research_mcp.github"]
+import parkour_mcp.doi  # noqa: E402
+_doi_mod = sys.modules["parkour_mcp.doi"]
 
-import kagi_research_mcp.ietf  # noqa: E402, F401
-_ietf_mod = sys.modules["kagi_research_mcp.ietf"]
+import parkour_mcp.reddit  # noqa: E402, F401
+_reddit_mod = sys.modules["parkour_mcp.reddit"]
 
-import kagi_research_mcp.packages  # noqa: E402, F401
-_packages_mod = sys.modules["kagi_research_mcp.packages"]
+import parkour_mcp.github  # noqa: E402, F401
+_github_mod = sys.modules["parkour_mcp.github"]
+
+import parkour_mcp.ietf  # noqa: E402, F401
+_ietf_mod = sys.modules["parkour_mcp.ietf"]
+
+import parkour_mcp.packages  # noqa: E402, F401
+_packages_mod = sys.modules["parkour_mcp.packages"]
 
 
 @pytest.fixture(autouse=True)

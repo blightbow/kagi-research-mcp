@@ -1,10 +1,10 @@
-"""Tests for kagi_research_mcp.shelf module."""
+"""Tests for parkour_mcp.shelf module."""
 
 import json
 
 import pytest
 
-from kagi_research_mcp.shelf import (
+from parkour_mcp.shelf import (
     CitationRecord,
     ResearchShelf,
     _get_shelf,

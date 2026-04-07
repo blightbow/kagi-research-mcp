@@ -1,4 +1,4 @@
-"""Tests for kagi_research_mcp.semantic_scholar module."""
+"""Tests for parkour_mcp.semantic_scholar module."""
 
 import httpx
 import pytest
@@ -6,11 +6,11 @@ import respx
 
 import sys
 
-import kagi_research_mcp.semantic_scholar  # noqa: F401
+import parkour_mcp.semantic_scholar  # noqa: F401
 # Alias the module before importing the same-named function
-_s2_module = sys.modules["kagi_research_mcp.semantic_scholar"]
+_s2_module = sys.modules["parkour_mcp.semantic_scholar"]
 
-from kagi_research_mcp.semantic_scholar import (  # noqa: E402
+from parkour_mcp.semantic_scholar import (  # noqa: E402
     S2_BASE_URL,
     _detect_s2_url,
     _fetch_s2_paper,
@@ -19,7 +19,7 @@ from kagi_research_mcp.semantic_scholar import (  # noqa: E402
     _s2_request,
     semantic_scholar,
 )
-from kagi_research_mcp._pipeline import _s2_fast_path  # noqa: E402
+from parkour_mcp._pipeline import _s2_fast_path  # noqa: E402
 
 from .conftest import (  # noqa: E402
     S2_PAPER_SEARCH_RESPONSE,
@@ -290,7 +290,7 @@ class TestSemanticScholarPaper:
         """An S2 paper whose DOI is reported retracted by CrossRef
         surfaces a banner, alert: fm key, and lands in the retracted
         shelf bucket."""
-        from kagi_research_mcp.shelf import _reset_shelf, _get_shelf
+        from parkour_mcp.shelf import _reset_shelf, _get_shelf
         _reset_shelf()
         try:
             paper_id = "204e3073870fae3d05bcbc2f6a8e263d9b72e776"

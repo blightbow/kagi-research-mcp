@@ -25,7 +25,7 @@ uv run python3 scripts/regenerate_readme_examples.py
 
 ## Architecture
 
-### Module Layout (`kagi_research_mcp/`)
+### Module Layout (`parkour_mcp/`)
 
 - **`__init__.py`** — MCP server entry point. Registers 11 tools with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.
 - **`_pipeline.py`** — Shared processing layer. Owns the fast-path detection chain, multi-entry caching (`_WikiCache` LRU, `_PageCache` 2Q), slicing, BM25 search, and section filtering.

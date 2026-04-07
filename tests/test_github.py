@@ -1,10 +1,10 @@
-"""Tests for kagi_research_mcp.github module (mocked, no network)."""
+"""Tests for parkour_mcp.github module (mocked, no network)."""
 
 import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.github import (
+from parkour_mcp.github import (
     _detect_github_url,
     _github_request,
     _next_page_url,
@@ -17,8 +17,8 @@ from kagi_research_mcp.github import (
     format_code_sections,
     github,
 )
-from kagi_research_mcp._pipeline import _page_cache
-from kagi_research_mcp.shelf import _get_shelf, _reset_shelf
+from parkour_mcp._pipeline import _page_cache
+from parkour_mcp.shelf import _get_shelf, _reset_shelf
 
 
 @pytest.fixture(autouse=True)
@@ -245,7 +245,7 @@ class TestGithubRequest:
     @pytest.mark.asyncio
     @respx.mock
     async def test_rate_limit_tracked(self):
-        from kagi_research_mcp.github import _rate_limits
+        from parkour_mcp.github import _rate_limits
         respx.get("https://api.github.com/repos/o/r").mock(
             return_value=httpx.Response(200, json={}, headers={
                 "x-ratelimit-limit": "5000",

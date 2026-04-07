@@ -1,6 +1,6 @@
-"""Tests for kagi_research_mcp.markdown module."""
+"""Tests for parkour_mcp.markdown module."""
 
-from kagi_research_mcp.markdown import (
+from parkour_mcp.markdown import (
     md,
     html_to_markdown,
     _slugify,

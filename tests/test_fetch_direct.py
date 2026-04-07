@@ -1,14 +1,14 @@
-"""Tests for kagi_research_mcp.fetch_direct module."""
+"""Tests for parkour_mcp.fetch_direct module."""
 
 import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.fetch_direct import (
+from parkour_mcp.fetch_direct import (
     web_fetch_direct,
     web_fetch_sections,
 )
-from kagi_research_mcp._pipeline import _wiki_cache, _page_cache
+from parkour_mcp._pipeline import _wiki_cache, _page_cache
 
 from .conftest import (
     SAMPLE_HTML_PAGE,
@@ -779,7 +779,7 @@ class TestWebFetchDirectGitHubOrg:
     @pytest.mark.asyncio
     async def test_system_page_not_intercepted(self):
         """System pages like /explore should not be intercepted."""
-        from kagi_research_mcp.github import _detect_github_url
+        from parkour_mcp.github import _detect_github_url
         assert _detect_github_url("https://github.com/explore") is None
         assert _detect_github_url("https://github.com/settings") is None
 

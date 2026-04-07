@@ -1,9 +1,9 @@
-"""Tests for kagi_research_mcp.ietf module."""
+"""Tests for parkour_mcp.ietf module."""
 
 import pytest
 import respx
 
-from kagi_research_mcp.ietf import (
+from parkour_mcp.ietf import (
     _detect_ietf_url,
     _fetch_rfc_metadata,
     _fetch_rfc_paper,
@@ -15,8 +15,8 @@ from kagi_research_mcp.ietf import (
     _RFC_DOI_RE,
     ietf,
 )
-from kagi_research_mcp._pipeline import _ietf_fast_path
-from kagi_research_mcp.shelf import _reset_shelf, _get_shelf
+from parkour_mcp._pipeline import _ietf_fast_path
+from parkour_mcp.shelf import _reset_shelf, _get_shelf
 
 
 # ---------------------------------------------------------------------------
@@ -204,12 +204,14 @@ class TestFormatRfcPaper:
 class TestFormatRfcList:
     def test_list_format(self):
         results = DATATRACKER_SEARCH_RESPONSE["objects"]
+        assert isinstance(results, list)
         body = _format_rfc_list(results, total=2, offset=0)
         assert "1. **RFC 9110**: HTTP Semantics" in body
         assert "2. **RFC 9111**: HTTP Caching" in body
 
     def test_pagination_hint(self):
         results = DATATRACKER_SEARCH_RESPONSE["objects"]
+        assert isinstance(results, list)
         body = _format_rfc_list(results, total=42, offset=0)
         assert "40 more results available" in body
 
@@ -452,7 +454,7 @@ class TestDoiDelegation:
     @pytest.mark.asyncio
     async def test_rfc_doi_delegates_to_ietf(self):
         """Verify that _fetch_doi_paper delegates 10.17487/RFC* to IETF handler."""
-        from kagi_research_mcp.doi import _fetch_doi_paper
+        from parkour_mcp.doi import _fetch_doi_paper
 
         respx.get("https://www.rfc-editor.org/rfc/rfc9110.json").respond(
             200, json=RFC_9110_META,

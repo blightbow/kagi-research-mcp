@@ -1,10 +1,10 @@
-"""Tests for kagi_research_mcp.mediawiki module."""
+"""Tests for parkour_mcp.mediawiki module."""
 
 import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.mediawiki import (
+from parkour_mcp.mediawiki import (
     _clean_display_title,
     _detect_mediawiki,
     _fetch_mediawiki_page,

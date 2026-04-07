@@ -11,7 +11,7 @@ from pydantic import Field
 
 import httpx
 
-from .common import _API_HEADERS, RateLimiter
+from .common import _API_HEADERS, RateLimiter, tool_name
 from .markdown import _build_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ def _s2_see_also(
     """Build see_also hints for an S2 paper response."""
     hints = []
     if arxiv_id:
-        hints.append(f"ARXIV:{arxiv_id} with ArXiv for categories")
+        hints.append(f"ARXIV:{arxiv_id} with {tool_name('arxiv')} for categories")
     if doi:
         hints.append(f"https://doi.org/{doi} for license and publisher metadata")
     if not hints:

@@ -1,4 +1,4 @@
-"""Tests for kagi_research_mcp.fetch_js module.
+"""Tests for parkour_mcp.fetch_js module.
 
 Browser-path tests are excluded because they require a real Playwright browser.
 Covers: MediaWiki fast path, search/slices, footnotes, content-type pre-check.
@@ -8,8 +8,8 @@ import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.fetch_js import web_fetch_js
-from kagi_research_mcp._pipeline import _wiki_cache, _page_cache
+from parkour_mcp.fetch_js import web_fetch_js
+from parkour_mcp._pipeline import _wiki_cache, _page_cache
 
 from .conftest import (
     MEDIAWIKI_QUERY_RESPONSE,

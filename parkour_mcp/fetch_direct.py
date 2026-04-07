@@ -6,7 +6,7 @@ from typing import Optional, Union
 
 import httpx
 
-from .common import _FETCH_HEADERS, check_url_ssrf
+from .common import _FETCH_HEADERS, check_url_ssrf, tool_name
 from .markdown import (
     html_to_markdown, _detect_js_dependent,
     _extract_sections_from_markdown, _build_section_list,
@@ -194,7 +194,7 @@ async def web_fetch_direct(
             if want_slicing:
                 return (
                     "Error: search/slices not supported for IETF metadata URLs. "
-                    "Use WebFetchDirect with the RFC's .html URL for full text with search/slices."
+                    f"Use {tool_name('web_fetch_direct')} with the RFC's .html URL for full text with search/slices."
                 )
             result = await _ietf_fast_path(url)
             if result is not None:
@@ -353,7 +353,7 @@ async def web_fetch_direct(
             fm = _build_frontmatter({
                 "source": source_url,
                 "warning": fragment_warning,
-                "see_also": "WebFetchJS — this page requires JavaScript to render content",
+                "see_also": f"{tool_name('web_fetch_js')} — this page requires JavaScript to render content",
             })
             return fm
         return f"Error: No content extracted from {url}"
@@ -441,7 +441,7 @@ async def _github_sections(
                 "api": "GitHub (raw)",
                 "note": f"No code definitions extracted for {ext} file. "
                         "Grammar may not be installed, or file has no function/class definitions.",
-                "hint": "Use WebFetchDirect to view the file content directly",
+                "hint": f"Use {tool_name('web_fetch_direct')} to view the file content directly",
             })
             return fm
 
@@ -452,7 +452,7 @@ async def _github_sections(
             "language": ext.lstrip("."),
             "definitions": len(defs),
             "trust": _TRUST_ADVISORY,
-            "hint": "Use WebFetchDirect with section= to extract a specific "
+            "hint": f"Use {tool_name('web_fetch_direct')} with section= to extract a specific "
                     "definition, or search= for BM25 keyword search within the file",
         })
         return fm + "\n\n" + _fence_content(section_body, title=match.path)
@@ -485,7 +485,7 @@ async def _github_sections(
             "type": "issue",
             "state": state,
             "trust": _TRUST_ADVISORY,
-            "hint": "Use WebFetchDirect with section='ic_<id>' to extract a "
+            "hint": f"Use {tool_name('web_fetch_direct')} with section='ic_<id>' to extract a "
                     "specific comment, or search= for BM25 keyword search",
         })
         return fm + "\n\n" + _fence_content(section_body, title=title)
@@ -524,7 +524,7 @@ async def _github_sections(
             "type": "pull_request",
             "state": display_state,
             "trust": _TRUST_ADVISORY,
-            "hint": "Use WebFetchDirect with section= to extract a file's "
+            "hint": f"Use {tool_name('web_fetch_direct')} with section= to extract a file's "
                     "review thread or specific comment, or search= for BM25 keyword search",
         })
         return fm + "\n\n" + _fence_content(section_body, title=title)
@@ -583,7 +583,7 @@ async def web_fetch_sections(url: str) -> str:
             "source": original_url,
             "api": "arXiv",
             "note": "Section listing is not applicable for API-sourced paper data. "
-                    f"Use WebFetchDirect with https://arxiv.org/html/{arxiv_id} "
+                    f"Use {tool_name('web_fetch_direct')} with https://arxiv.org/html/{arxiv_id} "
                     "for full paper text with section-aware browsing.",
         })
         return fm
@@ -596,7 +596,7 @@ async def web_fetch_sections(url: str) -> str:
             "source": original_url,
             "api": "Semantic Scholar",
             "note": "Section listing is not applicable for API-sourced paper data. "
-                    "Use WebFetchDirect or SemanticScholar tool for full content.",
+                    f"Use {tool_name('web_fetch_direct')} or {tool_name('semantic_scholar')} tool for full content.",
         })
         return fm
 
@@ -608,7 +608,7 @@ async def web_fetch_sections(url: str) -> str:
         fm = _build_frontmatter({
             "source": original_url,
             "api": "IETF (RFC Editor)",
-            "note": f"Use WebFetchDirect with https://www.rfc-editor.org/rfc/rfc{n}.html "
+            "note": f"Use {tool_name('web_fetch_direct')} with https://www.rfc-editor.org/rfc/rfc{n}.html "
                     "for full RFC text with section-aware browsing.",
         })
         return fm
@@ -634,7 +634,7 @@ async def web_fetch_sections(url: str) -> str:
                         "source": original_url,
                         "api": "Reddit (.json)",
                         "trust": _TRUST_ADVISORY,
-                        "hint": "Use WebFetchDirect with section=#comment_id to "
+                        "hint": f"Use {tool_name('web_fetch_direct')} with section=#comment_id to "
                                 "extract a specific comment and its replies, "
                                 "or search= for keyword search across comments",
                     })
@@ -645,7 +645,7 @@ async def web_fetch_sections(url: str) -> str:
                 "source": original_url,
                 "api": "Reddit (.json)",
                 "note": "Section listing is only available for comment threads. "
-                        "Use WebFetchDirect with search= for keyword search.",
+                        f"Use {tool_name('web_fetch_direct')} with search= for keyword search.",
             })
             return fm
         except Exception:
@@ -699,7 +699,7 @@ async def web_fetch_sections(url: str) -> str:
         if _detect_js_dependent(response.text):
             fm = _build_frontmatter({
                 "source": original_url,
-                "see_also": "WebFetchJS — this page requires JavaScript to render content",
+                "see_also": f"{tool_name('web_fetch_js')} — this page requires JavaScript to render content",
             })
             return fm
         return f"Error: No content extracted from {url}"
@@ -726,7 +726,7 @@ def _sections_response(
     entries = {
         "source": url,
         "trust": _TRUST_ADVISORY,
-        "hint": "Use WebFetchDirect with section parameter to extract specific sections by name",
+        "hint": f"Use {tool_name('web_fetch_direct')} with section parameter to extract specific sections by name",
     }
     sections_available = _build_section_list(all_sections, include_slugs=True)
     sections_not_found = None

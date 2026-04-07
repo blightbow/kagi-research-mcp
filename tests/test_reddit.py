@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.reddit import (
+from parkour_mcp.reddit import (
     _detect_reddit_url,
     _classify_reddit_url,
     _fetch_reddit_content,
@@ -18,7 +18,7 @@ from kagi_research_mcp.reddit import (
     _MAX_COMMENT_DEPTH,
     RedditPageType,
 )
-from kagi_research_mcp._pipeline import _reddit_fast_path, _page_cache
+from parkour_mcp._pipeline import _reddit_fast_path, _page_cache
 
 
 # ---------------------------------------------------------------------------

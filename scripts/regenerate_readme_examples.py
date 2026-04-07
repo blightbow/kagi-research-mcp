@@ -20,12 +20,12 @@ import logging
 import httpx
 import respx
 
-from kagi_research_mcp.fetch_direct import web_fetch_direct, web_fetch_sections
-from kagi_research_mcp.semantic_scholar import semantic_scholar
-from kagi_research_mcp.arxiv import arxiv
+from parkour_mcp.fetch_direct import web_fetch_direct, web_fetch_sections
+from parkour_mcp.semantic_scholar import semantic_scholar
+from parkour_mcp.arxiv import arxiv
 
 # Disable Reddit rate limiter for fixture-based generation
-import kagi_research_mcp.reddit as _reddit_mod
+import parkour_mcp.reddit as _reddit_mod
 _reddit_mod._reddit_limiter.min_interval = 0.0
 
 # ── URLs used across examples ───────────────────────────────────────────────

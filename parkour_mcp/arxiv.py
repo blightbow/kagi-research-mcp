@@ -10,7 +10,7 @@ from pydantic import Field
 
 import httpx
 
-from .common import _API_USER_AGENT, RateLimiter
+from .common import _API_USER_AGENT, RateLimiter, tool_name
 from .markdown import _build_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -286,11 +286,11 @@ def _format_arxiv_paper(data: dict, *, html_available: bool = True) -> str:
     if arxiv_id:
         if html_available:
             parts.append(
-                f"*For citation data, use SemanticScholar with `ARXIV:{arxiv_id}`*\n"
+                f"*For citation data, use {tool_name('semantic_scholar')} with `ARXIV:{arxiv_id}`*\n"
             )
         else:
             parts.append(
-                f"*For citation data and body text snippets, use SemanticScholar with `ARXIV:{arxiv_id}`*\n"
+                f"*For citation data and body text snippets, use {tool_name('semantic_scholar')} with `ARXIV:{arxiv_id}`*\n"
             )
 
     # Abstract
@@ -325,7 +325,7 @@ def _format_arxiv_list(
 
     if include_hint:
         hint = (
-            "\n*Use `paper` action or SemanticScholar with `ARXIV:<id>` "
+            f"\n*Use `paper` action or {tool_name('semantic_scholar')} with `ARXIV:<id>` "
             "for full details and citation data.*"
         )
         lines.append(hint)
@@ -349,9 +349,9 @@ def _arxiv_see_also(
     """Build see_also hints for an arXiv paper response."""
     hints = []
     if html_available:
-        hints.append(f"ARXIV:{arxiv_id} with SemanticScholar for citation counts")
+        hints.append(f"ARXIV:{arxiv_id} with {tool_name('semantic_scholar')} for citation counts")
     else:
-        hints.append(f"ARXIV:{arxiv_id} with SemanticScholar for citation counts and body text snippets")
+        hints.append(f"ARXIV:{arxiv_id} with {tool_name('semantic_scholar')} for citation counts and body text snippets")
     if not citation_text:
         hints.append(f"https://doi.org/10.48550/arXiv.{_strip_version(arxiv_id)} for formatted citation")
     return hints if len(hints) > 1 else hints[0]
@@ -422,7 +422,7 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
         "source": f"https://arxiv.org/abs/{clean_id}",
         "api": "arXiv",
         "full_text": (
-            f"Use WebFetchDirect with {html_url} for full paper text with search/slices"
+            f"Use {tool_name('web_fetch_direct')} with {html_url} for full paper text with search/slices"
             if html_available
             else None
         ),
@@ -545,7 +545,7 @@ async def arxiv(
             "api": "arXiv",
             "action": "search",
             "query": query,
-            "hint": "Use paper action for full details, or SemanticScholar with ARXIV:<id> for citation data",
+            "hint": f"Use paper action for full details, or {tool_name('semantic_scholar')} with ARXIV:<id> for citation data",
         })
         return fm + "\n\n" + _format_arxiv_list(result, total=None, offset=offset, include_hint=False)
 
@@ -574,7 +574,7 @@ async def arxiv(
             "api": "arXiv",
             "action": "category",
             "category": query,
-            "hint": "Use paper action for full details, or SemanticScholar with ARXIV:<id> for citation data",
+            "hint": f"Use paper action for full details, or {tool_name('semantic_scholar')} with ARXIV:<id> for citation data",
         })
         return fm + "\n\n" + _format_arxiv_list(result, total=None, offset=offset, include_hint=False)
 

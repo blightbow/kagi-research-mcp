@@ -1,4 +1,4 @@
-"""Kagi Research MCP Server - Web browsing and content extraction tools for Claude."""
+"""Parkour MCP Server - Web browsing and content extraction tools for Claude."""
 
 import argparse
 import logging
@@ -14,28 +14,12 @@ from .github import github
 from .ietf import ietf
 from .packages import packages
 from .shelf import research_shelf, _get_shelf
+from .common import TOOL_NAMES, init_tool_names
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("kagi-research-mcp")
-
-# Profile-specific tool names to match Claude client conventions
-# code profile: PascalCase (WebSearch, WebFetch, WebFetchJS)
-# desktop profile: snake_case (web_search, web_fetch, web_fetch_js)
-TOOL_NAMES = {
-    "search": {"code": "KagiSearch", "desktop": "kagi_search"},
-    "web_fetch_sections": {"code": "WebFetchSections", "desktop": "web_fetch_sections"},
-    "web_fetch_direct": {"code": "WebFetchDirect", "desktop": "web_fetch_direct"},
-    "web_fetch_js": {"code": "WebFetchJS", "desktop": "web_fetch_js"},
-    "summarize": {"code": "KagiSummarize", "desktop": "kagi_summarize"},
-    "semantic_scholar": {"code": "SemanticScholar", "desktop": "semantic_scholar"},
-    "arxiv": {"code": "ArXiv", "desktop": "arxiv"},
-    "research_shelf": {"code": "ResearchShelf", "desktop": "research_shelf"},
-    "github": {"code": "GitHub", "desktop": "github"},
-    "ietf": {"code": "IETF", "desktop": "ietf"},
-    "packages": {"code": "Packages", "desktop": "packages"},
-}
+mcp = FastMCP("parkour-mcp")
 
 # Per-profile template variables — tool names and description overrides.
 # code profile: PascalCase (WebSearch, WebFetch)
@@ -44,23 +28,28 @@ PROFILE_VARS = {
     "code": {
         "search": "WebSearch",
         "fetch": "WebFetch",
-        "fetch_direct": "WebFetchDirect",
+        "fetch_direct": "WebFetchExact",
         "summarize": "KagiSummarize",
         "fetch_direct_when_to_use": (
-            "Unlike WebFetch, returns unsummarized page content — use this when you need\n"
-            "to extract specific data or preserve details that summarization would discard."
+            "Unlike WebFetch, fetches through the user's device instead of proxying through\n"
+            "Anthropic's servers. Uses precise content extraction techniques and clean\n"
+            "first-party APIs for navigating content instead of summarization.\n"
+            "Use this for a rich content exploring experience that is not subject to 403\n"
+            "bans of data-center subnets, or for extracting specific details that\n"
+            "summarization would discard."
         ),
     },
     "desktop": {
         "search": "web_search",
         "fetch": "web_fetch",
-        "fetch_direct": "web_fetch_direct",
+        "fetch_direct": "web_fetch_exact",
         "summarize": "kagi_summarize",
         "fetch_direct_when_to_use": (
-            "Unlike web_fetch, fetches from the user's device instead of proxying through\n"
-            "Anthropic's servers. Use this when web_fetch returns HTTP 403 errors (target\n"
-            "site blocking data-center IPs) or rejects the tool use with PERMISSIONS_ERROR\n"
-            "(URL not yet present in the conversation context)."
+            "Unlike web_fetch, fetches through the user's device instead of proxying through\n"
+            "Anthropic's servers. Uses precise content extraction techniques and clean\n"
+            "first-party APIs for navigating content instead of summarization.\n"
+            "Use this for a rich content exploring experience that is not subject to 403\n"
+            "bans of data-center subnets, or when web_fetch is rejected with PERMISSIONS_ERROR.\n"
         ),
     },
 }
@@ -144,7 +133,7 @@ Use this when {fetch} fails due to agent blacklisting or access restrictions."""
 Use this for arXiv paper lookups: search by query, get paper details
 (abstract, authors, categories, affiliations, DOI, journal refs), or
 browse recent papers by category. arXiv abstract and PDF URLs are also
-handled automatically by {fetch_direct} tools.
+handled automatically by {fetch_direct}.
 
 IMPORTANT: Search uses arXiv query syntax, NOT natural language:
 - Field prefixes: ti: (title), au: (author), abs: (abstract),
@@ -163,7 +152,7 @@ Use this for academic paper lookups: search by keywords, get paper details
 (abstract, authors, citation counts, references), and find authors. Paper
 details include total and influential citation counts. Accepts paper IDs,
 DOI:10.xxx, ARXIV:2301.xxx, or S2 URLs. Semantic Scholar URLs are also
-handled automatically by {fetch} tools.
+handled automatically by {fetch_direct}.
 
 Actions: search, paper, references, author_search, author, snippets.
 
@@ -248,7 +237,7 @@ def _build_description(tool_name: str, profile: str) -> str:
 
 def main():
     """Run the MCP server."""
-    parser = argparse.ArgumentParser(description="Kagi Research MCP Server")
+    parser = argparse.ArgumentParser(description="Parkour MCP Server")
     parser.add_argument(
         "--profile",
         choices=["code", "desktop"],
@@ -256,6 +245,8 @@ def main():
         help="Target client profile (default: desktop)",
     )
     args = parser.parse_args()
+
+    init_tool_names(args.profile)
 
     # Register all tools with profile-specific names and descriptions
     tools = [

@@ -27,6 +27,7 @@ from .semantic_scholar import _detect_s2_url, _fetch_s2_paper
 from .arxiv import _detect_arxiv_url, _fetch_arxiv_paper
 from .doi import _detect_doi_url, _fetch_doi_paper
 from .reddit import _detect_reddit_url, _fetch_reddit_content, _split_by_comments
+from .common import tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +267,7 @@ class _PageCache:
 
         When *renderer* is specified, only returns a hit if the cached entry
         was produced by the same renderer.  This prevents WebFetchJS from
-        reusing sparse content that WebFetchDirect cached from a JS-heavy page.
+        reusing sparse content that WebFetchExact cached from a JS-heavy page.
         """
         # Check protected first (most likely for active pages)
         entry = self._protected.get(url)
@@ -1124,7 +1125,7 @@ async def _github_fast_path(
             "source": f"https://github.com/{match.owner}/{match.repo}/releases",
             "api": "GitHub",
             "type": "releases",
-            "hint": "Use WebFetchDirect with a specific release tag URL for full release notes and assets",
+            "hint": f"Use {tool_name('web_fetch_direct')} with a specific release tag URL for full release notes and assets",
             "trust": _TRUST_ADVISORY,
         })
         return fm + "\n\n" + _fence_content("\n".join(parts), title=f"{match.owner}/{match.repo} releases")
@@ -1169,7 +1170,7 @@ def _process_markdown_sections(
             use it.
         renderer: Tag stored with the cache entry ("direct" or "js") so
             that WebFetchJS won't reuse sparse content cached by
-            WebFetchDirect.
+            WebFetchExact.
     """
     # Populate the page cache before any filtering/truncation
     if cache_url and markdown_content:

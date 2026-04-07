@@ -1,5 +1,5 @@
 [project]
-name = "kagi-research-mcp"
+name = "parkour-mcp"
 version = "0.2.0"
 description = "Research synthesis pipeline for MCP enabling targeted content extraction from websites and research papers"
 readme = "README.md"
@@ -47,7 +47,7 @@ Repository = "https://github.com/blightbow/kagi-research-mcp"
 Issues = "https://github.com/blightbow/kagi-research-mcp/issues"
 
 [project.scripts]
-kagi-research-mcp = "kagi_research_mcp:main"
+parkour-mcp = "parkour_mcp:main"
 
 [tool.setuptools.packages.find]
 exclude = ["tmp*", "tests*", "scripts*"]

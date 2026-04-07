@@ -294,7 +294,7 @@ async def web_fetch_js(
         footnotes = None
 
     # --- Search/slices cache-first path ---
-    # Skip cache entries produced by WebFetchDirect ("direct") — its static
+    # Skip cache entries produced by WebFetchExact ("direct") — its static
     # HTML may be sparse for JS-heavy pages.  Entries from "js" (Playwright)
     # or "wiki" (MediaWiki API, identical regardless of calling tool) are safe.
     if want_slicing:
