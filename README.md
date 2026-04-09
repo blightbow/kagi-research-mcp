@@ -17,6 +17,7 @@ API integrations:
 - GitHub
 - MediaWiki
 - Reddit (old.reddit.com JSON API)
+- Discourse (header-detected, raw markdown API)
 
 ## Why Parkour?
 What sets Parkour apart from the standard approaches are three principles:
@@ -42,6 +43,7 @@ Parkour also intercepts requests for content from websites with robust first-par
 | DOI | `doi.org/10.*` URLs | Content negotiation (CrossRef/DataCite metadata) |
 | GitHub | `github.com/*` | REST API (bypasses JS SPA) |
 | Reddit | `reddit.com`, `redd.it` | `old.reddit.com` `.json` endpoint (bypasses login wall) |
+| Discourse | `x-discourse-route` response header | JSON API with raw author markdown |
 | IETF | `rfc-editor.org`, `datatracker.ietf.org` | RFC Editor JSON / Datatracker REST |
 
 For example, asking Parkour to fetch `https://arxiv.org/abs/1706.03762` doesn't scrape the landing page. It returns structured metadata via the Atom API, with frontmatter hints pointing to the HTML full text and a Semantic Scholar cross-reference for citation counts:
@@ -284,8 +286,8 @@ The `--profile` argument adjusts tool names and descriptions for the target clie
 
 | Profile | Target | Tool Names |
 |---------|--------|------------|
-| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_exact`, `web_fetch_sections`, `semantic_scholar`, `arxiv`, `github`, `ietf`, `packages` |
-| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS`, `WebFetchExact`, `WebFetchSections`, `SemanticScholar`, `ArXiv`, `GitHub`, `IETF`, `Packages` |
+| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_exact`, `web_fetch_sections`, `semantic_scholar`, `arxiv`, `github`, `ietf`, `packages`, `discourse` |
+| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS`, `WebFetchExact`, `WebFetchSections`, `SemanticScholar`, `ArXiv`, `GitHub`, `IETF`, `Packages`, `Discourse` |
 
 The `desktop` profile (snake_case) is the default as it aligns with MCP ecosystem conventions. Claude Code's PascalCase naming is the exception, not the norm.
 
@@ -304,6 +306,7 @@ arxiv              | ArXiv                 | Search and retrieve academic papers
 github             | GitHub                | Search and retrieve code, issues, pull requests, commits, and comparisons from GitHub (7 actions: search_issues, search_code, repo, tree, issue, pull_request, file)
 ietf               | IETF                  | Search and retrieve IETF RFCs and Internet-Drafts (4 actions: rfc, search, draft, subseries)
 packages           | Packages              | Inspect software packages across 7 language ecosystems via deps.dev (5 actions: package, version, dependencies, project, advisory)
+discourse          | Discourse             | Search and browse Discourse forum topics (3 actions: topic, search, latest) — auto-detected via response headers
 kagi_summarize     | KagiSummarize         | Summarize URLs or text (supports PDFs, YouTube, audio)
 
 For detailed capabilities, worked examples, and integration-specific behavior, see the [Guide](docs/guide.md).
@@ -361,16 +364,26 @@ echo "your-api-key" > ~/.config/parkour/kagi_api_key
 
 Get your API key at https://kagi.com/settings?p=api
 
-### Semantic Scholar API Key (optional)
+### Semantic Scholar (opt-in)
 
-The SemanticScholar tool works without an API key but shares a global rate limit pool. For your own rate limit, get a free key and configure it:
+The SemanticScholar tool is disabled by default. Use of the Semantic Scholar API is governed by the [S2 API License Agreement](https://www.semanticscholar.org/product/api/license). To enable the tool, acknowledge the license terms by opting in:
 
 ```bash
 # Option 1: Environment variable
+export S2_ACCEPT_TOS=1
+
+# Option 2: Config file (presence is sufficient)
+mkdir -p ~/.config/parkour
+touch ~/.config/parkour/s2_accept_tos
+```
+
+Optionally, configure an API key for your own rate limit (free, but the tool works without one):
+
+```bash
+# Environment variable
 export S2_API_KEY="your-api-key"
 
-# Option 2: Config file
-mkdir -p ~/.config/parkour
+# Or config file
 echo "your-api-key" > ~/.config/parkour/s2_api_key
 ```
 
@@ -477,6 +490,9 @@ uv run pytest
 
 # Live integration tests (hits real endpoints)
 uv run pytest -m live
+
+# Pack Claude Desktop Extension bundle
+just pack
 ```
 
 ## FAQ
@@ -502,7 +518,7 @@ Kagi is optimized against SEO pollution and a natural fit for research needs. If
 - https://help.kagi.com/kagi/api/summarizer.html
 - https://help.kagi.com/kagi/api/search.html
 
-**Semantic Scholar Tool:** No. The key is optional, and free: https://www.semanticscholar.org/product/api
+**Semantic Scholar Tool:** No. The tool requires opt-in via `S2_ACCEPT_TOS=1` (see setup), but no API key. The key is optional and free: https://www.semanticscholar.org/product/api
 
 **arXiv Tool:** No. The arXiv API is free and requires no authentication.
 
@@ -519,6 +535,10 @@ The flag is stored internally and persists until a kagi_search call successfully
 > My agent developed an addiction to kagi_summarize and drank my entire API balance in one sitting!
 
 You probably shouldn't have auto-approved that tool. Sorry, we can't help.
+
+> Where is the Semantic Scholar tool? I don't see it in my tool list.
+
+The SemanticScholar tool is disabled by default because it requires awareness of the [Semantic Scholar API License Agreement](https://www.semanticscholar.org/product/api/license). To enable it, set `S2_ACCEPT_TOS=1` in your environment or create `~/.config/parkour/s2_accept_tos` (see [setup](#semantic-scholar-opt-in)). When disabled, S2 URL interception and cross-reference hints from other tools (arXiv, DOI, IETF) are also suppressed.
 
 > Why is the Semantic Scholar tool returning 429 errors about a global rate limit?
 

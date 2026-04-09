@@ -15,6 +15,7 @@ from .arxiv import arxiv
 from .github import github
 from .ietf import ietf
 from .packages import packages
+from .discourse import discourse
 from .shelf import research_shelf, _get_shelf
 from .common import TOOL_NAMES, init_tool_names, s2_enabled
 
@@ -41,6 +42,7 @@ _ICON_FILES = {
     "github": "github",             # ⑂  U+2442 OCR FORK (NotoSansSymbols2)
     "ietf": "ietf",                 # 🐌 U+1F40C SNAIL (NotoEmoji)
     "packages": "packages",         # ⬡  U+2B21 WHITE HEXAGON (NotoSansMath)
+    "discourse": "discourse",       # 💬 U+1F4AC SPEECH BALLOON (NotoEmoji)
 }
 _SERVER_ICON_FILE = "server"        # ∮  U+222E CONTOUR INTEGRAL (NotoSansMath)
 
@@ -270,6 +272,26 @@ Ecosystem aliases: pypi, npm, cargo/crates, go/golang, maven, nuget, rubygems/ge
 
 For repository details (README, issues, code), use {fetch_direct} or the GitHub tool.""",
 
+    "discourse": """Search and browse Discourse forum topics.
+
+Use this for Discourse forum lookups: fetch a topic with all posts, search
+a forum, or browse recent topics. Discourse URLs are also detected
+automatically by {fetch_direct} via response headers — this tool is for
+structured queries when you know the forum's base URL.
+
+Actions: topic, search, latest.
+
+Query formats:
+- topic: full topic URL (e.g. 'https://meta.discourse.org/t/topic-slug/12345')
+- search: search query string (requires base_url)
+- latest: ignored (requires base_url to identify the forum)
+
+The base_url parameter identifies which Discourse instance to query
+(e.g. 'https://meta.discourse.org'). For the topic action, base_url
+is inferred from the URL if not provided.
+
+No authentication required for public forums.""",
+
     "research_shelf": """Manage the research shelf — an in-memory tracker for papers inspected during research.
 
 Papers are automatically added when you use ArXiv, DOI, or IETF
@@ -324,6 +346,7 @@ def main():
         ("github", github),
         ("ietf", ietf),
         ("packages", packages),
+        ("discourse", discourse),
     ]
     if _s2_on:
         from .semantic_scholar import semantic_scholar

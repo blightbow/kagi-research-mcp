@@ -29,6 +29,9 @@ _ietf_mod = sys.modules["parkour_mcp.ietf"]
 import parkour_mcp.packages  # noqa: E402, F401
 _packages_mod = sys.modules["parkour_mcp.packages"]
 
+import parkour_mcp.discourse  # noqa: E402, F401
+_discourse_mod = sys.modules["parkour_mcp.discourse"]
+
 
 @pytest.fixture(autouse=True)
 def _enable_s2_for_tests(monkeypatch):
@@ -67,6 +70,13 @@ def _disable_ietf_rate_limit(monkeypatch):
 def _disable_depsdev_rate_limit(monkeypatch):
     """Disable the 1s deps.dev rate limiter in unit tests."""
     monkeypatch.setattr(_packages_mod._depsdev_limiter, "min_interval", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _disable_discourse_rate_limit(monkeypatch):
+    """Disable Discourse per-host rate limiters in unit tests."""
+    monkeypatch.setattr(_discourse_mod, "_DEFAULT_DISCOURSE_INTERVAL", 0.0)
+    _discourse_mod._discourse_limiters.clear()
 
 
 # Sample markdown document used across multiple test modules

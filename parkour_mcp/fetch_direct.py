@@ -3,6 +3,7 @@
 import logging
 import re
 from typing import Optional, Union
+from urllib.parse import urlparse
 
 import httpx
 
@@ -15,7 +16,7 @@ from .markdown import (
 )
 from ._pipeline import (
     _extract_fragment, _normalize_sections, _resolve_fragment_source,
-    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _ietf_fast_path, _doi_fast_path, _reddit_fast_path, _github_fast_path,
+    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _ietf_fast_path, _doi_fast_path, _reddit_fast_path, _discourse_fast_path, _github_fast_path,
     _process_markdown_sections,
     _cached_mediawiki_fetch,
     _page_cache, _search_slices, _get_slices,
@@ -115,7 +116,7 @@ async def web_fetch_direct(
     if want_slicing:
         fm_base = {"source": source_url, "warning": fragment_warning}
         cached = _page_cache.get(url)
-        if cached and cached.renderer in ("direct", "wiki", "reddit", "github"):
+        if cached and cached.renderer in ("direct", "wiki", "reddit", "discourse", "github"):
             fm_base["title"] = cached.title or "Untitled"
             if search is not None:
                 return _search_slices(url, search, max_tokens, fm_base) or \
@@ -305,6 +306,34 @@ async def web_fetch_direct(
         return f"Error: HTTP {e.response.status_code} for {url}"
     except httpx.RequestError as e:
         return f"Error: Failed to fetch {url} - {type(e).__name__}"
+
+    # --- Discourse post-fetch detection (header-based) ---
+    try:
+        from .discourse import _detect_discourse_headers
+        if _detect_discourse_headers(response.headers):
+            result = await _discourse_fast_path(url, response.headers, max_tokens)
+            if result is not None:
+                if want_slicing:
+                    return _dispatch_slicing(
+                        url, search, slices,
+                        slices_list if slices is not None else [],
+                        max_tokens, source_url, warning=fragment_warning,
+                    )
+                if section_names:
+                    cached = _page_cache.get(url)
+                    if cached and cached.markdown:
+                        return _process_markdown_sections(
+                            cached.markdown, section_names, max_tokens,
+                            frontmatter_entries={
+                                "source": source_url,
+                                "api": "Discourse",
+                                "warning": fragment_warning,
+                            },
+                            cache_url=url,
+                        )
+                return result
+    except Exception:
+        pass
 
     # Check content type
     content_type = response.headers.get("content-type", "")
@@ -690,6 +719,45 @@ async def web_fetch_sections(url: str) -> str:
         return f"Error: HTTP {e.response.status_code} for {url}"
     except httpx.RequestError as e:
         return f"Error: Failed to fetch {url} - {type(e).__name__}"
+
+    # --- Discourse post-fetch detection (section tree) ---
+    try:
+        from .discourse import (
+            _detect_discourse_headers, _extract_topic_id,
+            _build_post_section_tree,
+            _base_url_from, _fetch_topic, _fetch_remaining_posts,
+        )
+        route = _detect_discourse_headers(response.headers)
+        if route and route.startswith("topics/"):
+            topic_id = _extract_topic_id(url)
+            if topic_id is not None:
+                base = _base_url_from(url)
+                hostname = urlparse(url).hostname or ""
+                data = await _fetch_topic(base, topic_id, hostname)
+                if isinstance(data, dict):
+                    ps = data.get("post_stream", {})
+                    stream = ps.get("stream", [])
+                    posts = list(ps.get("posts", []))
+                    inline_ids = {p["id"] for p in posts}
+                    remaining = [pid for pid in stream if pid not in inline_ids]
+                    if remaining:
+                        extra = await _fetch_remaining_posts(base, topic_id, remaining, hostname)
+                        if isinstance(extra, list):
+                            posts.extend(extra)
+                    posts.sort(key=lambda p: p.get("post_number", 0))
+
+                    title, section_body = _build_post_section_tree(data, posts)
+                    fm = _build_frontmatter({
+                        "source": original_url,
+                        "api": "Discourse",
+                        "trust": _TRUST_ADVISORY,
+                        "hint": f"Use {tool_name('web_fetch_direct')} with section=N to "
+                                "extract a specific post by number, "
+                                "or search= for keyword search across posts",
+                    })
+                    return fm + "\n\n" + _fence_content(section_body)
+    except Exception:
+        pass
 
     content_type = response.headers.get("content-type", "")
     is_html = "text/html" in content_type or "application/xhtml" in content_type
