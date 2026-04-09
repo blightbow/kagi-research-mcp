@@ -8,6 +8,7 @@ import platform
 import socket
 import time
 from importlib.metadata import version as _pkg_version
+from pathlib import Path
 from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
@@ -179,6 +180,29 @@ def init_tool_names(profile: str) -> None:
     _TOOL_DISPLAY_NAMES.update(
         {key: names[profile] for key, names in TOOL_NAMES.items()}
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic Scholar opt-in gate
+# ---------------------------------------------------------------------------
+
+_S2_TOS_CONFIG_PATH = Path.home() / ".config" / "parkour" / "s2_accept_tos"
+
+
+def s2_enabled() -> bool:
+    """Return True only if the user has explicitly opted in to Semantic Scholar.
+
+    Checks (in order):
+    1. ``S2_ACCEPT_TOS`` environment variable (any truthy value: 1/true/yes)
+    2. Presence of ``~/.config/parkour/s2_accept_tos`` file
+
+    The gate is intentionally separate from ``S2_API_KEY`` — having a key does
+    not imply awareness of the license terms, and S2 functions without one
+    (at reduced rate limits).
+    """
+    if os.environ.get("S2_ACCEPT_TOS", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return _S2_TOS_CONFIG_PATH.is_file()
 
 
 def tool_name(key: str) -> str:

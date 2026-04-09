@@ -344,11 +344,13 @@ async def web_fetch_js(
     except Exception:
         pass
 
-    # --- Semantic Scholar fast path (before launching browser) ---
+    # --- Semantic Scholar fast path (gated on S2 opt-in) ---
     try:
-        result = await _s2_fast_path(url)
-        if result is not None:
-            return result
+        from .common import s2_enabled
+        if s2_enabled():
+            result = await _s2_fast_path(url)
+            if result is not None:
+                return result
     except Exception:
         pass
 

@@ -10,7 +10,7 @@ from pydantic import Field
 
 import httpx
 
-from .common import _API_HEADERS, _API_USER_AGENT, RateLimiter, tool_name
+from .common import _API_HEADERS, _API_USER_AGENT, RateLimiter, s2_enabled, tool_name
 from .markdown import _build_frontmatter, _fence_content
 
 logger = logging.getLogger(__name__)
@@ -467,7 +467,10 @@ async def _fetch_rfc_paper(number: int) -> str:
             f"Use {tool_name('web_fetch_direct')} with https://www.rfc-editor.org/rfc/rfc{number}.html "
             "for full RFC text with search/slices"
         ),
-        "see_also": f"Use {tool_name('semantic_scholar')} with DOI:{rfc_doi} for citation data",
+        "see_also": (
+            f"Use {tool_name('semantic_scholar')} with DOI:{rfc_doi} for citation data"
+            if s2_enabled() else None
+        ),
     }
 
     # Subseries membership

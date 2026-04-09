@@ -31,8 +31,9 @@ _packages_mod = sys.modules["parkour_mcp.packages"]
 
 
 @pytest.fixture(autouse=True)
-def _disable_s2_rate_limit(monkeypatch):
-    """Disable the 1s rate limiter in unit tests."""
+def _enable_s2_for_tests(monkeypatch):
+    """Enable Semantic Scholar integration and disable its rate limiter in tests."""
+    monkeypatch.setenv("S2_ACCEPT_TOS", "1")
     monkeypatch.setattr(_s2_mod._s2_limiter, "min_interval", 0.0)
 
 

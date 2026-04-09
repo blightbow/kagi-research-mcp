@@ -172,18 +172,20 @@ async def web_fetch_direct(
     except Exception:
         pass
 
-    # --- Semantic Scholar fast path ---
+    # --- Semantic Scholar fast path (gated on S2 opt-in) ---
     try:
-        from .semantic_scholar import _detect_s2_url
-        if _detect_s2_url(url):
-            if want_slicing:
-                return (
-                    "Error: search/slices not supported for Semantic Scholar URLs. "
-                    "Use the SemanticScholar tool's snippets action instead."
-                )
-            result = await _s2_fast_path(url)
-            if result is not None:
-                return result
+        from .common import s2_enabled
+        if s2_enabled():
+            from .semantic_scholar import _detect_s2_url
+            if _detect_s2_url(url):
+                if want_slicing:
+                    return (
+                        "Error: search/slices not supported for Semantic Scholar URLs. "
+                        "Use the SemanticScholar tool's snippets action instead."
+                    )
+                result = await _s2_fast_path(url)
+                if result is not None:
+                    return result
     except Exception:
         pass
 
@@ -589,16 +591,18 @@ async def web_fetch_sections(url: str) -> str:
         return fm
 
     # --- Semantic Scholar fast path (sections not applicable for API data) ---
-    from .semantic_scholar import _detect_s2_url
-    if _detect_s2_url(url):
-        fm = _build_frontmatter({
-            "title": "Semantic Scholar paper",
-            "source": original_url,
-            "api": "Semantic Scholar",
-            "note": "Section listing is not applicable for API-sourced paper data. "
-                    f"Use {tool_name('web_fetch_direct')} or {tool_name('semantic_scholar')} tool for full content.",
-        })
-        return fm
+    from .common import s2_enabled as _s2_on
+    if _s2_on():
+        from .semantic_scholar import _detect_s2_url
+        if _detect_s2_url(url):
+            fm = _build_frontmatter({
+                "title": "Semantic Scholar paper",
+                "source": original_url,
+                "api": "Semantic Scholar",
+                "note": "Section listing is not applicable for API-sourced paper data. "
+                        f"Use {tool_name('web_fetch_direct')} or {tool_name('semantic_scholar')} tool for full content.",
+            })
+            return fm
 
     # --- IETF fast path (sections: redirect to HTML for section browsing) ---
     from .ietf import _detect_ietf_url

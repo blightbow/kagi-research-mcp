@@ -11,13 +11,12 @@ from mcp.types import Icon, ToolAnnotations
 from .kagi import search, summarize
 from .fetch_js import web_fetch_js
 from .fetch_direct import web_fetch_direct, web_fetch_sections
-from .semantic_scholar import semantic_scholar
 from .arxiv import arxiv
 from .github import github
 from .ietf import ietf
 from .packages import packages
 from .shelf import research_shelf, _get_shelf
-from .common import TOOL_NAMES, init_tool_names
+from .common import TOOL_NAMES, init_tool_names, s2_enabled
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -197,10 +196,7 @@ IMPORTANT: Search uses arXiv query syntax, NOT natural language:
 - Boolean operators: AND, OR, ANDNOT
 - Examples: "ti:attention AND cat:cs.CL", "au:vaswani AND ti:transformer"
 
-Actions: search, paper, category.
-
-For citation counts and cross-references, use SemanticScholar with
-ARXIV:<id> after retrieving the arXiv ID.""",
+Actions: search, paper, category.""",
 
     "semantic_scholar": """Search and retrieve academic paper data from Semantic Scholar.
 
@@ -276,7 +272,7 @@ For repository details (README, issues, code), use {fetch_direct} or the GitHub 
 
     "research_shelf": """Manage the research shelf — an in-memory tracker for papers inspected during research.
 
-Papers are automatically added when you use ArXiv, SemanticScholar, DOI, or IETF
+Papers are automatically added when you use ArXiv, DOI, or IETF
 tools to inspect individual papers or RFCs. Use this tool to review, score, confirm,
 or remove tracked papers, and to export citations in BibTeX or RIS format.
 
@@ -304,20 +300,34 @@ def main():
 
     init_tool_names(args.profile)
 
+    # Conditionally enrich descriptions when S2 is opted in
+    _s2_on = s2_enabled()
+    if _s2_on:
+        TOOL_DESCRIPTIONS["arxiv"] += (
+            "\n\nFor citation counts and cross-references, use SemanticScholar with\n"
+            "ARXIV:<id> after retrieving the arXiv ID."
+        )
+        TOOL_DESCRIPTIONS["research_shelf"] = TOOL_DESCRIPTIONS["research_shelf"].replace(
+            "ArXiv, DOI, or IETF",
+            "ArXiv, SemanticScholar, DOI, or IETF",
+        )
+
     # Register all tools with profile-specific names and descriptions
-    tools = [
+    tools: list[tuple[str, object]] = [
         ("search", search),
         ("web_fetch_sections", web_fetch_sections),
         ("web_fetch_direct", web_fetch_direct),
         ("web_fetch_js", web_fetch_js),
         ("summarize", summarize),
-        ("semantic_scholar", semantic_scholar),
         ("arxiv", arxiv),
         ("research_shelf", research_shelf),
         ("github", github),
         ("ietf", ietf),
         ("packages", packages),
     ]
+    if _s2_on:
+        from .semantic_scholar import semantic_scholar
+        tools.append(("semantic_scholar", semantic_scholar))
     for internal_name, func in tools:
         name = TOOL_NAMES[internal_name][args.profile]
         desc = _build_description(internal_name, args.profile)

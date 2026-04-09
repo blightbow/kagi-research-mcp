@@ -23,7 +23,6 @@ from .markdown import (
     _TRUST_ADVISORY,
 )
 from .mediawiki import _detect_mediawiki, _fetch_mediawiki_page, _mediawiki_html_to_markdown
-from .semantic_scholar import _detect_s2_url, _fetch_s2_paper
 from .arxiv import _detect_arxiv_url, _fetch_arxiv_paper
 from .doi import _detect_doi_url, _fetch_doi_paper
 from .reddit import _detect_reddit_url, _fetch_reddit_content, _split_by_comments
@@ -505,7 +504,15 @@ async def _s2_fast_path(url: str) -> Optional[str]:
     """Attempt to fetch a Semantic Scholar paper via the API.
 
     Returns formatted paper details on success, or None to signal fallback.
+    Gated on ``s2_enabled()`` — returns None (fall through) when S2 is not
+    opted in, so the URL proceeds to generic HTTP fetch.
     """
+    from .common import s2_enabled
+    if not s2_enabled():
+        return None
+
+    from .semantic_scholar import _detect_s2_url, _fetch_s2_paper
+
     paper_id = _detect_s2_url(url)
     if not paper_id:
         return None
