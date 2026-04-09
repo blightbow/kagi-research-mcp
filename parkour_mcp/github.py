@@ -21,7 +21,7 @@ from typing import Annotated, Optional
 import httpx
 from pydantic import Field
 
-from .common import _API_USER_AGENT, _FETCH_HEADERS, RateLimiter
+from .common import _API_USER_AGENT, _FETCH_HEADERS, RateLimiter, tool_name
 from .markdown import (
     _build_frontmatter, _fence_content, _TRUST_ADVISORY,
     _apply_semantic_truncation,
@@ -33,12 +33,12 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-GITHUB_CONFIG_PATH = Path.home() / ".config" / "kagi" / "github_token"
+GITHUB_CONFIG_PATH = Path.home() / ".config" / "parkour" / "github_token"
 _GITHUB_API_VERSION = "2022-11-28"
 
 _NO_TOKEN_MSG = (
     "Rate limited. Unauthenticated GitHub API allows only 60 requests/hour.\n"
-    "Set GITHUB_TOKEN env var or create ~/.config/kagi/github_token "
+    "Set GITHUB_TOKEN env var or create ~/.config/parkour/github_token "
     "with a personal access token.\n"
     "No special scopes needed for public repos. "
     "See: https://github.com/settings/tokens"
@@ -1138,7 +1138,7 @@ async def _action_repo(query: str) -> str:
             fm_entries["hint"] = (
                 f"README truncated. Use GitHub file action with "
                 f"'{owner}/{repo}/{readme_path}' for full content, "
-                f"or WebFetchDirect('{readme_url}', section=...) for specific sections."
+                f"or {tool_name('web_fetch_direct')}('{readme_url}', section=...) for specific sections."
             )
     fm_entries["shelf"] = await _track_repo_on_shelf(
         owner, repo, name, desc, result, citation_cff,

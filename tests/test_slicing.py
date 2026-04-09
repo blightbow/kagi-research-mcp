@@ -4,11 +4,11 @@ import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.fetch_direct import web_fetch_direct
-from kagi_research_mcp.markdown import (
+from parkour_mcp.fetch_direct import web_fetch_direct
+from parkour_mcp.markdown import (
     _compute_slice_ancestry,
 )
-from kagi_research_mcp._pipeline import _page_cache, _wiki_cache
+from parkour_mcp._pipeline import _page_cache, _wiki_cache
 
 
 @pytest.fixture(autouse=True)
@@ -209,7 +209,7 @@ class TestPageCache:
 
     def test_new_entries_land_in_probation(self):
         """A freshly stored entry is in probation, not protected."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=3)
         cache.store("https://a.com", "A", "# A")
         assert "https://a.com" in cache._probation
@@ -217,7 +217,7 @@ class TestPageCache:
 
     def test_get_promotes_to_protected(self):
         """Accessing a probation entry promotes it to protected."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=3)
         cache.store("https://a.com", "A", "# A")
         cache.get("https://a.com")
@@ -226,7 +226,7 @@ class TestPageCache:
 
     def test_eviction_prefers_probation(self):
         """Probation entries are evicted before protected entries."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=3)
         cache.store("https://a.com", "A", "# A")
         cache.get("https://a.com")  # promote A to protected
@@ -241,7 +241,7 @@ class TestPageCache:
 
     def test_protected_lru_eviction(self):
         """When probation is empty, the oldest protected entry is evicted."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=3)
         # Fill with all-promoted entries
         cache.store("https://a.com", "A", "# A")
@@ -259,7 +259,7 @@ class TestPageCache:
 
     def test_scan_resistance(self):
         """One-hit pages in probation don't evict drilled-into protected pages."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=4)
         # Two pages the user drills into (promoted to protected)
         cache.store("https://working-a.com", "A", "# A")
@@ -284,7 +284,7 @@ class TestPageCache:
 
     def test_renderer_filter_no_promotion(self):
         """get() with non-matching renderer does not promote the entry."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=5)
         cache.store("https://example.com", "Title", "# Content", renderer="direct")
         # This should return None (renderer mismatch) and NOT promote
@@ -294,7 +294,7 @@ class TestPageCache:
 
     def test_store_same_url_updates_in_place(self):
         """Storing the same URL replaces the entry without evicting others."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=3)
         cache.store("https://a.com", "A", "# A")
         cache.store("https://b.com", "B", "# B")
@@ -307,7 +307,7 @@ class TestPageCache:
 
     def test_store_updates_protected_in_place(self):
         """Re-storing a URL that was already promoted keeps it in protected."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=3)
         cache.store("https://a.com", "A", "# A")
         cache.get("https://a.com")  # promote to protected
@@ -319,7 +319,7 @@ class TestPageCache:
 
     def test_group_eviction(self):
         """Evicting one entry evicts all entries in its group."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=4)
         cache.store("https://pr/1/comments", "PR comments", "# Comments", group="pr:1")
         cache.store("https://pr/1/code", "PR code", "# Code", group="pr:1")
@@ -336,7 +336,7 @@ class TestPageCache:
 
     def test_group_eviction_across_queues(self):
         """Group eviction removes members from both probation and protected."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=4)
         cache.store("https://pr/1/a", "A", "# A", group="pr:1")
         cache.get("https://pr/1/a")  # promote to protected
@@ -353,7 +353,7 @@ class TestPageCache:
 
     def test_clear(self):
         """clear() empties all entries from both queues."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=5)
         cache.store("https://a.com", "A", "# A")
         cache.get("https://a.com")  # promote to protected
@@ -374,7 +374,7 @@ class TestPageCache:
 
     def test_stats_structure(self):
         """stats property returns queue distribution and per-entry info."""
-        from kagi_research_mcp._pipeline import _PageCache
+        from parkour_mcp._pipeline import _PageCache
         cache = _PageCache(max_entries=5)
         cache.store("https://a.com", "A", "# A content here")
         cache.store("https://b.com", "B", "# B content here")

@@ -15,7 +15,7 @@ from typing import Optional
 
 import httpx
 
-from .common import _API_USER_AGENT, RateLimiter
+from .common import _API_USER_AGENT, RateLimiter, s2_enabled, tool_name
 from .markdown import (
     _build_frontmatter,
     _fence_content,
@@ -782,7 +782,10 @@ async def _fetch_doi_paper(doi: str) -> str:
         "alert": _build_alert_message(retraction, other_update),
         "note": shelf_result.shelf_note or _build_correction_note(other_update),
         "relation": _relations_fm_entry(relations),
-        "see_also": f"DOI:{doi} with SemanticScholar for citation counts and references",
+        "see_also": (
+            f"DOI:{doi} with {tool_name('semantic_scholar')} for citation counts and references"
+            if s2_enabled() else None
+        ),
         "shelf": shelf_result.status_line,
     }
     fm = _build_frontmatter(fm_entries)

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**kagi-research-mcp** — an MCP server providing a research synthesis pipeline for targeted content extraction from websites and research papers. Integrates Kagi, Semantic Scholar, arXiv, deps.dev, MediaWiki, and DOI resolution APIs into a unified tool suite for Claude Code and Claude Desktop.
+**parkour-mcp** — an MCP server providing a content exploration and research synthesis pipeline. Uses clean first-party APIs to surface and explore web content without summarization. Integrates Kagi, Semantic Scholar, arXiv, deps.dev, IETF, GitHub, MediaWiki, Reddit, Discourse, and DOI resolution APIs into a unified tool suite for Claude Code and Claude Desktop.
 
 ## Commands
 
@@ -21,13 +21,16 @@ uv run pytest -m live
 
 # Regenerate README examples (live endpoints + Reddit fixtures)
 uv run python3 scripts/regenerate_readme_examples.py
+
+# Pack Claude Desktop Extension bundle
+just pack
 ```
 
 ## Architecture
 
-### Module Layout (`kagi_research_mcp/`)
+### Module Layout (`parkour_mcp/`)
 
-- **`__init__.py`** — MCP server entry point. Registers 11 tools with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.
+- **`__init__.py`** — MCP server entry point. Registers 12 tools with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.
 - **`_pipeline.py`** — Shared processing layer. Owns the fast-path detection chain, multi-entry caching (`_WikiCache` LRU, `_PageCache` 2Q), slicing, BM25 search, and section filtering.
 - **`markdown.py`** — HTML→markdown conversion via custom `TextOnlyConverter`. Section extraction with fuzzy slug matching. Content fencing. Semantic truncation for markdown, hard truncation for structured formats.
 - **`shelf.py`** — Research shelf implementation. All public methods guarded by `asyncio.Lock`.
@@ -44,11 +47,12 @@ API integration modules (each ~300-650 LOC, self-contained):
 - **`github.py`** — GitHub REST API integration. 7 tool actions (search_issues, search_code, repo, tree, issue, pull_request, file). Three-tier auth (env → config file → unauthenticated). Per-resource rate limit tracking. URL detection for fast-path chain covering blob (with line anchors), tree, issue, PR, wiki, commit, compare, releases, org/user profiles, gist, and `raw.githubusercontent.com`. Source code sectionization via tree-sitter CodeSplitter. CITATION.cff parsing for research shelf integration. ~1600 LOC.
 - **`ietf.py`** — IETF RFC and Internet-Draft integration. 4 tool actions (rfc, search, draft, subseries). RFC Editor per-document JSON for metadata and relationship chains (obsoletes/updates). IETF Datatracker REST API for search with status/WG filtering. BibXML service for subseries (STD/BCP/FYI) resolution. Native DOI tracking (`10.17487/RFC{N}`). 1s Datatracker rate limit.
 - **`packages.py`** — deps.dev (Google Open Source Insights) integration. 5 tool actions (package, version, dependencies, project, advisory). Covers 7 ecosystems (npm, PyPI, Go, Maven, Cargo, NuGet, RubyGems). Version history, license detection, security advisories (GHSA/CVE with CVSS), resolved dependency graphs with native constraints, OpenSSF Scorecard, OSS-Fuzz coverage, and SLSA provenance. No auth required. 1s politeness rate limit. Body content fenced (contributor-supplied fields are injection vectors). ~480 LOC.
-- **`common.py`** — Shared constants: dual User-Agent strategy (browser UA for HTML, API UA for structured endpoints), `RateLimiter` class, `_LANGUAGE_MAP` for file extension → syntax highlight language.
+- **`discourse.py`** — Discourse forum integration. 3 tool actions (topic, search, latest). Detects Discourse instances via `x-discourse-route` response header (post-fetch, not URL-based). Two-request topic assembly: first page inline + batch remaining via `post_ids[]`. Raw author markdown via `include_raw=true`. Per-host rate limiting via lazy-initialized dict. Quote BBCode → blockquote conversion, `upload://` ref cleanup. Post-aware BM25 splitting and reply-threaded section trees. No auth required. ~490 LOC.
+- **`common.py`** — Shared constants: dual User-Agent strategy (browser UA for HTML, API UA for structured endpoints), `RateLimiter` class, `s2_enabled()` gate, `_LANGUAGE_MAP` for file extension → syntax highlight language.
 
 ### Key Concepts
 
-**Fast paths**: When a URL belongs to a known API-backed source (Wikipedia, arXiv, Semantic Scholar, DOI, Reddit, GitHub), the server can skip the generic HTTP-fetch-and-convert path and instead call the source's structured API directly. This is faster, yields richer metadata, and avoids scraping. The detection chain in `fetch_direct.py` tests URLs in priority order: arXiv → Semantic Scholar → IETF → DOI → Reddit → GitHub → MediaWiki → generic HTTP fallback.
+**Fast paths**: When a URL belongs to a known API-backed source (Wikipedia, arXiv, Semantic Scholar, DOI, Reddit, GitHub, Discourse), the server can skip the generic HTTP-fetch-and-convert path and instead call the source's structured API directly. This is faster, yields richer metadata, and avoids scraping. The pre-fetch detection chain in `fetch_direct.py` tests URLs in priority order: arXiv → Semantic Scholar → IETF → DOI → Reddit → GitHub → MediaWiki → generic HTTP fallback. Discourse uses post-fetch detection via the `x-discourse-route` response header — after the initial HTTP fetch, the header is checked and the URL is re-fetched via the JSON API if detected.
 
 **Slicing**: Long pages are split into chunks (~1600-2000 chars) at semantic boundaries (headings, paragraph breaks) using `semantic-text-splitter`. Each slice records its "ancestry" — which heading hierarchy it belongs to. The slices are indexed with tantivy for BM25 keyword search, so callers can search within a cached page or request specific slices by index rather than re-fetching the whole document.
 
@@ -68,10 +72,11 @@ API integration modules (each ~300-650 LOC, self-contained):
 
 | Variable | Purpose |
 |---|---|
-| `KAGI_API_KEY` | Kagi API key (fallback: `~/.config/kagi/api_key`) |
-| `S2_API_KEY` | Semantic Scholar API key (fallback: `~/.config/kagi/s2_api_key`) |
+| `KAGI_API_KEY` | Kagi API key (fallback: `~/.config/parkour/kagi_api_key`) |
+| `S2_API_KEY` | Semantic Scholar API key (fallback: `~/.config/parkour/s2_api_key`) |
 | `MCP_CONTACT_EMAIL` | Enables CrossRef "polite pool" (10 req/s vs 5 req/s) |
-| `GITHUB_TOKEN` | GitHub personal access token (fallback: `~/.config/kagi/github_token`). 5000 req/hr vs 60/hr unauthenticated |
+| `GITHUB_TOKEN` | GitHub personal access token (fallback: `~/.config/parkour/github_token`). 5000 req/hr vs 60/hr unauthenticated |
+| `S2_ACCEPT_TOS` | Set to `1` to enable Semantic Scholar integration (also: `~/.config/parkour/s2_accept_tos` file) |
 | `PLAYWRIGHT_BROWSER` | Override browser for JS rendering |
 | `MCP_ALLOW_PRIVATE_IPS` | Set to `1` to allow fetching from private/loopback/link-local IPs (default: blocked) |
 
@@ -89,6 +94,7 @@ API integration modules (each ~300-650 LOC, self-contained):
 - Rate limiters (`common.py`) use `asyncio.Lock` to serialize concurrent API calls; the second caller sleeps only for the remaining interval.
 - arXiv `/html/` URLs are intentionally NOT fast-pathed — they contain full rendered text worth slicing, unlike `/abs/` which is just metadata.
 - Reddit fast path uses browser UA (`_FETCH_HEADERS`), not API UA — the `.json` endpoint is a page variant, not a formal API, and Reddit blocks bot UAs on unauthenticated requests. This is intentionally NOT the official Reddit API; it requires no OAuth, no API key, and no approval process.
+- Discourse fast path uses post-fetch header detection (`x-discourse-route`), not URL pattern matching. This is the only fast path that operates after the initial HTTP fetch rather than before it. Per-host rate limiting via `_discourse_limiters` dict (lazy-initialized, 1s default).
 
 ## Technical Debt
 

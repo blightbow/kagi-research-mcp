@@ -1,4 +1,4 @@
-"""Shared constants and utilities for kagi-research-mcp."""
+"""Shared constants and utilities for parkour-mcp."""
 
 import asyncio
 import ipaddress
@@ -8,12 +8,13 @@ import platform
 import socket
 import time
 from importlib.metadata import version as _pkg_version
+from pathlib import Path
 from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Package / runtime versions (used in User-Agent strings)
 # ---------------------------------------------------------------------------
-_VERSION = _pkg_version("kagi-research-mcp")
+_VERSION = _pkg_version("parkour-mcp")
 _HTTPX_VERSION = _pkg_version("httpx")
 _MARKDOWNIFY_VERSION = _pkg_version("markdownify")
 _PYTHON_VERSION = platform.python_version()
@@ -38,8 +39,8 @@ _FETCH_HEADERS = {
 _CONTACT_EMAIL = os.environ.get("MCP_CONTACT_EMAIL", "")
 _CONTACT_PART = f" mailto:{_CONTACT_EMAIL};" if _CONTACT_EMAIL else ""
 _API_USER_AGENT = (
-    f"kagi-research-mcp/{_VERSION} "
-    f"(MCP content tool;{_CONTACT_PART} +https://github.com/blightbow/kagi-research-mcp) "
+    f"parkour-mcp/{_VERSION} "
+    f"(MCP content tool;{_CONTACT_PART} +https://github.com/blightbow/parkour-mcp) "
     f"httpx/{_HTTPX_VERSION} markdownify/{_MARKDOWNIFY_VERSION} "
     f"Python/{_PYTHON_VERSION} {_PLATFORM}"
 )
@@ -144,3 +145,78 @@ def check_url_ssrf(url: str) -> str | None:
             return f"Error: Blocked request to private/reserved address ({hostname} -> {addr})."
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Tool display names — profile-aware lookup for hint/note/see_also strings
+# ---------------------------------------------------------------------------
+
+# Canonical mapping from internal tool key to profile-specific display names.
+TOOL_NAMES: dict[str, dict[str, str]] = {
+    "search": {"code": "KagiSearch", "desktop": "kagi_search"},
+    "web_fetch_sections": {"code": "WebFetchSections", "desktop": "web_fetch_sections"},
+    "web_fetch_direct": {"code": "WebFetchExact", "desktop": "web_fetch_exact"},
+    "web_fetch_js": {"code": "WebFetchJS", "desktop": "web_fetch_js"},
+    "summarize": {"code": "KagiSummarize", "desktop": "kagi_summarize"},
+    "semantic_scholar": {"code": "SemanticScholar", "desktop": "semantic_scholar"},
+    "arxiv": {"code": "ArXiv", "desktop": "arxiv"},
+    "research_shelf": {"code": "ResearchShelf", "desktop": "research_shelf"},
+    "github": {"code": "GitHub", "desktop": "github"},
+    "ietf": {"code": "IETF", "desktop": "ietf"},
+    "packages": {"code": "Packages", "desktop": "packages"},
+    "discourse": {"code": "Discourse", "desktop": "discourse"},
+}
+
+# Populated by init_tool_names() at startup; keyed by internal tool name.
+_TOOL_DISPLAY_NAMES: dict[str, str] = {}
+
+
+def init_tool_names(profile: str) -> None:
+    """Populate display-name lookup from TOOL_NAMES for the given profile.
+
+    Called once from main() and from test conftest.py.
+    """
+    assert profile in ("code", "desktop"), f"Unknown profile: {profile!r}"
+    _TOOL_DISPLAY_NAMES.clear()
+    _TOOL_DISPLAY_NAMES.update(
+        {key: names[profile] for key, names in TOOL_NAMES.items()}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Semantic Scholar opt-in gate
+# ---------------------------------------------------------------------------
+
+_S2_TOS_CONFIG_PATH = Path.home() / ".config" / "parkour" / "s2_accept_tos"
+
+
+def s2_enabled() -> bool:
+    """Return True only if the user has explicitly opted in to Semantic Scholar.
+
+    Checks (in order):
+    1. ``S2_ACCEPT_TOS`` environment variable (any truthy value: 1/true/yes)
+    2. Presence of ``~/.config/parkour/s2_accept_tos`` file
+
+    The gate is intentionally separate from ``S2_API_KEY`` — having a key does
+    not imply awareness of the license terms, and S2 functions without one
+    (at reduced rate limits).
+    """
+    if os.environ.get("S2_ACCEPT_TOS", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return _S2_TOS_CONFIG_PATH.is_file()
+
+
+def tool_name(key: str) -> str:
+    """Return the profile-appropriate display name for a tool.
+
+    Asserts that init_tool_names() has been called and *key* is valid.
+    """
+    assert _TOOL_DISPLAY_NAMES, (
+        "tool_name() called before init_tool_names() — "
+        "call init_tool_names(profile) at startup or in test conftest.py"
+    )
+    assert key in _TOOL_DISPLAY_NAMES, (
+        f"Unknown tool key {key!r} — "
+        f"valid keys: {', '.join(sorted(_TOOL_DISPLAY_NAMES))}"
+    )
+    return _TOOL_DISPLAY_NAMES[key]

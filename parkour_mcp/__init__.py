@@ -1,41 +1,82 @@
-"""Kagi Research MCP Server - Web browsing and content extraction tools for Claude."""
+"""Parkour MCP Server - Web browsing and content extraction tools for Claude."""
 
 import argparse
+import base64
 import logging
+import pathlib
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import Icon, ToolAnnotations
 
 from .kagi import search, summarize
 from .fetch_js import web_fetch_js
 from .fetch_direct import web_fetch_direct, web_fetch_sections
-from .semantic_scholar import semantic_scholar
 from .arxiv import arxiv
 from .github import github
 from .ietf import ietf
 from .packages import packages
+from .discourse import discourse
 from .shelf import research_shelf, _get_shelf
+from .common import TOOL_NAMES, init_tool_names, s2_enabled
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("kagi-research-mcp")
+# ---------------------------------------------------------------------------
+# Tool icons — SVG glyphs extracted from Noto fonts (SIL OFL 1.1 licensed).
+# Source files live in assets/icons/*.svg; encoded to data: URIs at startup
+# since the MCP Icon spec requires https:// or data: URIs (no local paths).
+# ---------------------------------------------------------------------------
+_ICONS_DIR = pathlib.Path(__file__).parent.parent / "assets" / "icons"
 
-# Profile-specific tool names to match Claude client conventions
-# code profile: PascalCase (WebSearch, WebFetch, WebFetchJS)
-# desktop profile: snake_case (web_search, web_fetch, web_fetch_js)
-TOOL_NAMES = {
-    "search": {"code": "KagiSearch", "desktop": "kagi_search"},
-    "web_fetch_sections": {"code": "WebFetchSections", "desktop": "web_fetch_sections"},
-    "web_fetch_direct": {"code": "WebFetchDirect", "desktop": "web_fetch_direct"},
-    "web_fetch_js": {"code": "WebFetchJS", "desktop": "web_fetch_js"},
-    "summarize": {"code": "KagiSummarize", "desktop": "kagi_summarize"},
-    "semantic_scholar": {"code": "SemanticScholar", "desktop": "semantic_scholar"},
-    "arxiv": {"code": "ArXiv", "desktop": "arxiv"},
-    "research_shelf": {"code": "ResearchShelf", "desktop": "research_shelf"},
-    "github": {"code": "GitHub", "desktop": "github"},
-    "ietf": {"code": "IETF", "desktop": "ietf"},
-    "packages": {"code": "Packages", "desktop": "packages"},
+# Internal tool key → SVG filename (without .svg extension)
+_ICON_FILES = {
+    "search": "search",             # 🔍 U+1F50D MAGNIFYING GLASS (NotoSansSymbols2)
+    "summarize": "summarize",       # Σ  U+03A3 GREEK CAPITAL SIGMA (NotoSansMono)
+    "web_fetch_sections": "sections",  # §  U+00A7 SECTION SIGN (NotoSansMono)
+    "web_fetch_direct": "exact",    # ⌖  U+2316 POSITION INDICATOR (NotoSansSymbols2)
+    "web_fetch_js": "js",           # ⚡ U+26A1 HIGH VOLTAGE (NotoSansSymbols2)
+    "arxiv": "arxiv",               # χ  U+03C7 GREEK SMALL CHI (NotoSansMono)
+    "semantic_scholar": "scholar",  # ∴  U+2234 THEREFORE (NotoSansMono)
+    "research_shelf": "shelf",      # ⊞  U+229E SQUARED PLUS (NotoSansMath)
+    "github": "github",             # ⑂  U+2442 OCR FORK (NotoSansSymbols2)
+    "ietf": "ietf",                 # 🐌 U+1F40C SNAIL (NotoEmoji)
+    "packages": "packages",         # ⬡  U+2B21 WHITE HEXAGON (NotoSansMath)
+    "discourse": "discourse",       # 💬 U+1F4AC SPEECH BALLOON (NotoEmoji)
 }
+_SERVER_ICON_FILE = "server"        # ∮  U+222E CONTOUR INTEGRAL (NotoSansMath)
+
+
+def _load_icon(filename: str) -> Icon | None:
+    """Read an SVG file from assets/icons/ and return it as a data: URI Icon."""
+    path = _ICONS_DIR / f"{filename}.svg"
+    if not path.is_file():
+        logger.warning("Icon file not found: %s", path)
+        return None
+    svg_bytes = path.read_bytes()
+    b64 = base64.b64encode(svg_bytes).decode("ascii")
+    return Icon(src=f"data:image/svg+xml;base64,{b64}", mimeType="image/svg+xml")
+
+
+def _load_tool_icon(key: str) -> list[Icon] | None:
+    """Load a tool icon by internal tool key, or None if unavailable."""
+    filename = _ICON_FILES.get(key)
+    if filename is None:
+        return None
+    icon = _load_icon(filename)
+    return [icon] if icon else None
+
+
+def _load_server_icons() -> list[Icon] | None:
+    """Load the server-level icon."""
+    icon = _load_icon(_SERVER_ICON_FILE)
+    return [icon] if icon else None
+
+
+mcp = FastMCP(
+    "parkour-mcp",
+    icons=_load_server_icons(),
+)
 
 # Per-profile template variables — tool names and description overrides.
 # code profile: PascalCase (WebSearch, WebFetch)
@@ -44,23 +85,28 @@ PROFILE_VARS = {
     "code": {
         "search": "WebSearch",
         "fetch": "WebFetch",
-        "fetch_direct": "WebFetchDirect",
+        "fetch_direct": "WebFetchExact",
         "summarize": "KagiSummarize",
         "fetch_direct_when_to_use": (
-            "Unlike WebFetch, returns unsummarized page content — use this when you need\n"
-            "to extract specific data or preserve details that summarization would discard."
+            "Unlike WebFetch, fetches through the user's device instead of proxying through\n"
+            "Anthropic's servers. Uses precise content extraction techniques and clean\n"
+            "first-party APIs for navigating content instead of summarization.\n"
+            "Use this for a rich content exploring experience that is not subject to 403\n"
+            "bans of data-center subnets, or for extracting specific details that\n"
+            "summarization would discard."
         ),
     },
     "desktop": {
         "search": "web_search",
         "fetch": "web_fetch",
-        "fetch_direct": "web_fetch_direct",
+        "fetch_direct": "web_fetch_exact",
         "summarize": "kagi_summarize",
         "fetch_direct_when_to_use": (
-            "Unlike web_fetch, fetches from the user's device instead of proxying through\n"
-            "Anthropic's servers. Use this when web_fetch returns HTTP 403 errors (target\n"
-            "site blocking data-center IPs) or rejects the tool use with PERMISSIONS_ERROR\n"
-            "(URL not yet present in the conversation context)."
+            "Unlike web_fetch, fetches through the user's device instead of proxying through\n"
+            "Anthropic's servers. Uses precise content extraction techniques and clean\n"
+            "first-party APIs for navigating content instead of summarization.\n"
+            "Use this for a rich content exploring experience that is not subject to 403\n"
+            "bans of data-center subnets, or when web_fetch is rejected with PERMISSIONS_ERROR.\n"
         ),
     },
 }
@@ -144,7 +190,7 @@ Use this when {fetch} fails due to agent blacklisting or access restrictions."""
 Use this for arXiv paper lookups: search by query, get paper details
 (abstract, authors, categories, affiliations, DOI, journal refs), or
 browse recent papers by category. arXiv abstract and PDF URLs are also
-handled automatically by {fetch_direct} tools.
+handled automatically by {fetch_direct}.
 
 IMPORTANT: Search uses arXiv query syntax, NOT natural language:
 - Field prefixes: ti: (title), au: (author), abs: (abstract),
@@ -152,10 +198,7 @@ IMPORTANT: Search uses arXiv query syntax, NOT natural language:
 - Boolean operators: AND, OR, ANDNOT
 - Examples: "ti:attention AND cat:cs.CL", "au:vaswani AND ti:transformer"
 
-Actions: search, paper, category.
-
-For citation counts and cross-references, use SemanticScholar with
-ARXIV:<id> after retrieving the arXiv ID.""",
+Actions: search, paper, category.""",
 
     "semantic_scholar": """Search and retrieve academic paper data from Semantic Scholar.
 
@@ -163,7 +206,7 @@ Use this for academic paper lookups: search by keywords, get paper details
 (abstract, authors, citation counts, references), and find authors. Paper
 details include total and influential citation counts. Accepts paper IDs,
 DOI:10.xxx, ARXIV:2301.xxx, or S2 URLs. Semantic Scholar URLs are also
-handled automatically by {fetch} tools.
+handled automatically by {fetch_direct}.
 
 Actions: search, paper, references, author_search, author, snippets.
 
@@ -188,7 +231,7 @@ Query formats vary by action:
 - file/tree: "owner/repo/path" (e.g. "pallets/flask/src/flask/app.py") — use ref= for branch/tag
 - repo: "owner/repo" (e.g. "pallets/flask")
 
-Authentication: Set GITHUB_TOKEN env var or create ~/.config/kagi/github_token
+Authentication: Set GITHUB_TOKEN env var or create ~/.config/parkour/github_token
 for 5000 req/hr (vs 60/hr unauthenticated). No special scopes needed for public repos.""",
 
     "ietf": """Search and retrieve IETF RFCs, Internet-Drafts, and standards-track documents.
@@ -229,9 +272,29 @@ Ecosystem aliases: pypi, npm, cargo/crates, go/golang, maven, nuget, rubygems/ge
 
 For repository details (README, issues, code), use {fetch_direct} or the GitHub tool.""",
 
+    "discourse": """Search and browse Discourse forum topics.
+
+Use this for Discourse forum lookups: fetch a topic with all posts, search
+a forum, or browse recent topics. Discourse URLs are also detected
+automatically by {fetch_direct} via response headers — this tool is for
+structured queries when you know the forum's base URL.
+
+Actions: topic, search, latest.
+
+Query formats:
+- topic: full topic URL (e.g. 'https://meta.discourse.org/t/topic-slug/12345')
+- search: search query string (requires base_url)
+- latest: ignored (requires base_url to identify the forum)
+
+The base_url parameter identifies which Discourse instance to query
+(e.g. 'https://meta.discourse.org'). For the topic action, base_url
+is inferred from the URL if not provided.
+
+No authentication required for public forums.""",
+
     "research_shelf": """Manage the research shelf — an in-memory tracker for papers inspected during research.
 
-Papers are automatically added when you use ArXiv, SemanticScholar, DOI, or IETF
+Papers are automatically added when you use ArXiv, DOI, or IETF
 tools to inspect individual papers or RFCs. Use this tool to review, score, confirm,
 or remove tracked papers, and to export citations in BibTeX or RIS format.
 
@@ -248,7 +311,7 @@ def _build_description(tool_name: str, profile: str) -> str:
 
 def main():
     """Run the MCP server."""
-    parser = argparse.ArgumentParser(description="Kagi Research MCP Server")
+    parser = argparse.ArgumentParser(description="Parkour MCP Server")
     parser.add_argument(
         "--profile",
         choices=["code", "desktop"],
@@ -257,24 +320,47 @@ def main():
     )
     args = parser.parse_args()
 
+    init_tool_names(args.profile)
+
+    # Conditionally enrich descriptions when S2 is opted in
+    _s2_on = s2_enabled()
+    if _s2_on:
+        TOOL_DESCRIPTIONS["arxiv"] += (
+            "\n\nFor citation counts and cross-references, use SemanticScholar with\n"
+            "ARXIV:<id> after retrieving the arXiv ID."
+        )
+        TOOL_DESCRIPTIONS["research_shelf"] = TOOL_DESCRIPTIONS["research_shelf"].replace(
+            "ArXiv, DOI, or IETF",
+            "ArXiv, SemanticScholar, DOI, or IETF",
+        )
+
     # Register all tools with profile-specific names and descriptions
-    tools = [
+    tools: list[tuple[str, object]] = [
         ("search", search),
         ("web_fetch_sections", web_fetch_sections),
         ("web_fetch_direct", web_fetch_direct),
         ("web_fetch_js", web_fetch_js),
         ("summarize", summarize),
-        ("semantic_scholar", semantic_scholar),
         ("arxiv", arxiv),
         ("research_shelf", research_shelf),
         ("github", github),
         ("ietf", ietf),
         ("packages", packages),
+        ("discourse", discourse),
     ]
+    if _s2_on:
+        from .semantic_scholar import semantic_scholar
+        tools.append(("semantic_scholar", semantic_scholar))
     for internal_name, func in tools:
         name = TOOL_NAMES[internal_name][args.profile]
         desc = _build_description(internal_name, args.profile)
-        mcp.add_tool(func, name=name, description=desc)
+        icons = _load_tool_icon(internal_name)
+        if internal_name == "research_shelf":
+            annotations = ToolAnnotations(destructiveHint=True)
+        else:
+            annotations = ToolAnnotations(readOnlyHint=True)
+        mcp.add_tool(func, name=name, description=desc, icons=icons,
+                      annotations=annotations)
 
     # MCP resource: read-only shelf summary
     @mcp.resource("research://shelf")

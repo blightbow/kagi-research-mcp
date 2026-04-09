@@ -17,7 +17,7 @@ from .markdown import (
 from .mediawiki import _extract_citations, _format_citations
 from ._pipeline import (
     _extract_fragment, _normalize_sections, _resolve_fragment_source,
-    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _doi_fast_path, _github_fast_path,
+    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _doi_fast_path, _discourse_fast_path, _github_fast_path,
     _process_markdown_sections,
     _cached_mediawiki_fetch,
     _page_cache, _dispatch_slicing,
@@ -294,7 +294,7 @@ async def web_fetch_js(
         footnotes = None
 
     # --- Search/slices cache-first path ---
-    # Skip cache entries produced by WebFetchDirect ("direct") — its static
+    # Skip cache entries produced by WebFetchExact ("direct") — its static
     # HTML may be sparse for JS-heavy pages.  Entries from "js" (Playwright)
     # or "wiki" (MediaWiki API, identical regardless of calling tool) are safe.
     if want_slicing:
@@ -344,11 +344,13 @@ async def web_fetch_js(
     except Exception:
         pass
 
-    # --- Semantic Scholar fast path (before launching browser) ---
+    # --- Semantic Scholar fast path (gated on S2 opt-in) ---
     try:
-        result = await _s2_fast_path(url)
-        if result is not None:
-            return result
+        from .common import s2_enabled
+        if s2_enabled():
+            result = await _s2_fast_path(url)
+            if result is not None:
+                return result
     except Exception:
         pass
 
@@ -408,6 +410,23 @@ async def web_fetch_js(
             async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
                 head_resp = await client.head(url, headers=_FETCH_HEADERS)
                 head_resp.raise_for_status()
+
+                # Discourse detection — avoid launching Playwright
+                try:
+                    from .discourse import _detect_discourse_headers
+                    if _detect_discourse_headers(head_resp.headers):
+                        result = await _discourse_fast_path(url, head_resp.headers, max_tokens)
+                        if result is not None:
+                            if want_slicing:
+                                return _dispatch_slicing(
+                                    url, search, slices,
+                                    slices_list if slices is not None else [],
+                                    max_tokens, source_url, warning=fragment_warning,
+                                )
+                            return result
+                except Exception:
+                    pass
+
                 ct = head_resp.headers.get("content-type", "")
                 is_html = "text/html" in ct or "application/xhtml" in ct
                 is_plain = "text/plain" in ct

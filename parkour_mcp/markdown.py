@@ -197,7 +197,7 @@ def _format_retraction_banner(
 
     The returned string uses ASCII block quote formatting so it renders
     prominently regardless of theme.  Values are assumed pre-validated by
-    the caller (``kagi_research_mcp.doi._extract_update_notice`` applies
+    the caller (``parkour_mcp.doi._extract_update_notice`` applies
     ``_DOI_SAFE_RE`` + printable-only filtering).
     """
     if retraction:

@@ -10,7 +10,7 @@ from pydantic import Field
 
 import httpx
 
-from .common import _API_USER_AGENT, RateLimiter
+from .common import _API_USER_AGENT, RateLimiter, tool_name
 from .markdown import _build_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -282,16 +282,18 @@ def _format_arxiv_paper(data: dict, *, html_available: bool = True) -> str:
             parts.append(f"**HTML:** https://arxiv.org/html/{arxiv_id}")
         parts.append("")
 
-    # Cross-reference to Semantic Scholar
+    # Cross-reference to Semantic Scholar (only when S2 is opted in)
     if arxiv_id:
-        if html_available:
-            parts.append(
-                f"*For citation data, use SemanticScholar with `ARXIV:{arxiv_id}`*\n"
-            )
-        else:
-            parts.append(
-                f"*For citation data and body text snippets, use SemanticScholar with `ARXIV:{arxiv_id}`*\n"
-            )
+        from .common import s2_enabled
+        if s2_enabled():
+            if html_available:
+                parts.append(
+                    f"*For citation data, use {tool_name('semantic_scholar')} with `ARXIV:{arxiv_id}`*\n"
+                )
+            else:
+                parts.append(
+                    f"*For citation data and body text snippets, use {tool_name('semantic_scholar')} with `ARXIV:{arxiv_id}`*\n"
+                )
 
     # Abstract
     if abstract := data.get("abstract"):
@@ -324,10 +326,14 @@ def _format_arxiv_list(
             lines.append(f"   arXiv:{arxiv_id}")
 
     if include_hint:
-        hint = (
-            "\n*Use `paper` action or SemanticScholar with `ARXIV:<id>` "
-            "for full details and citation data.*"
-        )
+        from .common import s2_enabled
+        if s2_enabled():
+            hint = (
+                f"\n*Use `paper` action or {tool_name('semantic_scholar')} with `ARXIV:<id>` "
+                "for full details and citation data.*"
+            )
+        else:
+            hint = "\n*Use `paper` action for full details.*"
         lines.append(hint)
 
     if total is not None and total > offset + len(papers):
@@ -345,15 +351,20 @@ def _format_arxiv_list(
 
 def _arxiv_see_also(
     arxiv_id: str, html_available: bool, citation_text: Optional[str],
-) -> list[str] | str:
+) -> list[str] | str | None:
     """Build see_also hints for an arXiv paper response."""
+    from .common import s2_enabled
+
     hints = []
-    if html_available:
-        hints.append(f"ARXIV:{arxiv_id} with SemanticScholar for citation counts")
-    else:
-        hints.append(f"ARXIV:{arxiv_id} with SemanticScholar for citation counts and body text snippets")
+    if s2_enabled():
+        if html_available:
+            hints.append(f"ARXIV:{arxiv_id} with {tool_name('semantic_scholar')} for citation counts")
+        else:
+            hints.append(f"ARXIV:{arxiv_id} with {tool_name('semantic_scholar')} for citation counts and body text snippets")
     if not citation_text:
         hints.append(f"https://doi.org/10.48550/arXiv.{_strip_version(arxiv_id)} for formatted citation")
+    if not hints:
+        return None
     return hints if len(hints) > 1 else hints[0]
 
 
@@ -422,7 +433,7 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
         "source": f"https://arxiv.org/abs/{clean_id}",
         "api": "arXiv",
         "full_text": (
-            f"Use WebFetchDirect with {html_url} for full paper text with search/slices"
+            f"Use {tool_name('web_fetch_direct')} with {html_url} for full paper text with search/slices"
             if html_available
             else None
         ),
@@ -541,11 +552,16 @@ async def arxiv(
         if not result:
             return f"No papers found for: {query}"
 
+        from .common import s2_enabled as _s2_on
+        _search_hint = (
+            f"Use paper action for full details, or {tool_name('semantic_scholar')} with ARXIV:<id> for citation data"
+            if _s2_on() else "Use paper action for full details"
+        )
         fm = _build_frontmatter({
             "api": "arXiv",
             "action": "search",
             "query": query,
-            "hint": "Use paper action for full details, or SemanticScholar with ARXIV:<id> for citation data",
+            "hint": _search_hint,
         })
         return fm + "\n\n" + _format_arxiv_list(result, total=None, offset=offset, include_hint=False)
 
@@ -570,11 +586,16 @@ async def arxiv(
         if not result:
             return f"No papers found in category: {query}"
 
+        from .common import s2_enabled as _s2_cat
+        _cat_hint = (
+            f"Use paper action for full details, or {tool_name('semantic_scholar')} with ARXIV:<id> for citation data"
+            if _s2_cat() else "Use paper action for full details"
+        )
         fm = _build_frontmatter({
             "api": "arXiv",
             "action": "category",
             "category": query,
-            "hint": "Use paper action for full details, or SemanticScholar with ARXIV:<id> for citation data",
+            "hint": _cat_hint,
         })
         return fm + "\n\n" + _format_arxiv_list(result, total=None, offset=offset, include_hint=False)
 

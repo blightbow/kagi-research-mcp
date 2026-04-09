@@ -24,6 +24,8 @@ from typing import Annotated, Optional
 
 from pydantic import Field as PydanticField
 
+from .common import tool_name
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -50,7 +52,7 @@ class CitationRecord:
     confirmed: bool = False                     # LLM-managed
     notes: Optional[str] = None                 # LLM-managed freetext
     # Populated when CrossRef reports an updated-by entry of type=retraction
-    # (see kagi_research_mcp.doi.fetch_crossref_metadata).  Presence of this
+    # (see parkour_mcp.doi.fetch_crossref_metadata).  Presence of this
     # field classifies the record as retracted and routes it to the separate
     # retracted bucket on the shelf — never mixed with citable entries.
     retraction: Optional[dict] = None           # {notice_doi, date, source, label}
@@ -517,7 +519,7 @@ class ResearchShelf:
         bits.append(f"{confirmed} confirmed" if confirmed else "0 confirmed")
         if retracted:
             bits.append(f"{retracted} retracted")
-        return f"{bits[0]} ({', '.join(bits[1:])}) — use ResearchShelf to review"
+        return f"{bits[0]} ({', '.join(bits[1:])}) — use {tool_name('research_shelf')} to review"
 
     async def status_line(self) -> Optional[str]:
         """Compact status for frontmatter. Returns None if shelf is empty."""

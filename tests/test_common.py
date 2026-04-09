@@ -1,11 +1,11 @@
-"""Tests for kagi_research_mcp.common module."""
+"""Tests for parkour_mcp.common module."""
 
 import socket
 from unittest.mock import patch
 
 import pytest
 
-from kagi_research_mcp.common import check_url_ssrf, _is_private_ip
+from parkour_mcp.common import check_url_ssrf, _is_private_ip
 
 
 class TestIsPrivateIp:
@@ -75,7 +75,7 @@ class TestCheckUrlSsrf:
         fake_addrinfo = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
         ]
-        with patch("kagi_research_mcp.common.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("parkour_mcp.common.socket.getaddrinfo", return_value=fake_addrinfo):
             result = check_url_ssrf("http://evil.example.com/steal")
             assert result is not None
             assert "private/reserved" in result
@@ -85,19 +85,19 @@ class TestCheckUrlSsrf:
         fake_addrinfo = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.80.46", 0)),
         ]
-        with patch("kagi_research_mcp.common.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("parkour_mcp.common.socket.getaddrinfo", return_value=fake_addrinfo):
             result = check_url_ssrf("http://example.com/page")
             assert result is None
 
     def test_dns_failure_passes_through(self):
         """DNS resolution failure should not block — let httpx report the error."""
-        with patch("kagi_research_mcp.common.socket.getaddrinfo", side_effect=socket.gaierror):
+        with patch("parkour_mcp.common.socket.getaddrinfo", side_effect=socket.gaierror):
             result = check_url_ssrf("http://nonexistent.invalid/")
             assert result is None
 
     def test_allows_when_env_override_set(self):
         """MCP_ALLOW_PRIVATE_IPS=1 should bypass all checks."""
-        with patch("kagi_research_mcp.common._ALLOW_PRIVATE_IPS", True):
+        with patch("parkour_mcp.common._ALLOW_PRIVATE_IPS", True):
             assert check_url_ssrf("http://127.0.0.1/admin") is None
             assert check_url_ssrf("http://192.168.1.1/") is None
             assert check_url_ssrf("http://[::1]/") is None
@@ -112,6 +112,6 @@ class TestCheckUrlSsrf:
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.80.46", 0)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
         ]
-        with patch("kagi_research_mcp.common.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("parkour_mcp.common.socket.getaddrinfo", return_value=fake_addrinfo):
             result = check_url_ssrf("http://dual-homed.example.com/")
             assert result is not None

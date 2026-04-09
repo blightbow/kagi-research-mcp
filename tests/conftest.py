@@ -1,31 +1,42 @@
-"""Shared fixtures for kagi-research-mcp tests."""
+"""Shared fixtures for parkour-mcp tests."""
 
 import sys
 
 import pytest
 
-import kagi_research_mcp.semantic_scholar  # noqa: E402
-_s2_mod = sys.modules["kagi_research_mcp.semantic_scholar"]
+from parkour_mcp.common import init_tool_names
 
-import kagi_research_mcp.doi  # noqa: E402
-_doi_mod = sys.modules["kagi_research_mcp.doi"]
+# Initialize tool display names once for the entire test session.
+# Uses "code" profile so tool_name() calls in hint/note strings resolve
+# to PascalCase names (WebFetchExact, SemanticScholar, etc.).
+init_tool_names("code")
 
-import kagi_research_mcp.reddit  # noqa: E402, F401
-_reddit_mod = sys.modules["kagi_research_mcp.reddit"]
+import parkour_mcp.semantic_scholar  # noqa: E402
+_s2_mod = sys.modules["parkour_mcp.semantic_scholar"]
 
-import kagi_research_mcp.github  # noqa: E402, F401
-_github_mod = sys.modules["kagi_research_mcp.github"]
+import parkour_mcp.doi  # noqa: E402
+_doi_mod = sys.modules["parkour_mcp.doi"]
 
-import kagi_research_mcp.ietf  # noqa: E402, F401
-_ietf_mod = sys.modules["kagi_research_mcp.ietf"]
+import parkour_mcp.reddit  # noqa: E402, F401
+_reddit_mod = sys.modules["parkour_mcp.reddit"]
 
-import kagi_research_mcp.packages  # noqa: E402, F401
-_packages_mod = sys.modules["kagi_research_mcp.packages"]
+import parkour_mcp.github  # noqa: E402, F401
+_github_mod = sys.modules["parkour_mcp.github"]
+
+import parkour_mcp.ietf  # noqa: E402, F401
+_ietf_mod = sys.modules["parkour_mcp.ietf"]
+
+import parkour_mcp.packages  # noqa: E402, F401
+_packages_mod = sys.modules["parkour_mcp.packages"]
+
+import parkour_mcp.discourse  # noqa: E402, F401
+_discourse_mod = sys.modules["parkour_mcp.discourse"]
 
 
 @pytest.fixture(autouse=True)
-def _disable_s2_rate_limit(monkeypatch):
-    """Disable the 1s rate limiter in unit tests."""
+def _enable_s2_for_tests(monkeypatch):
+    """Enable Semantic Scholar integration and disable its rate limiter in tests."""
+    monkeypatch.setenv("S2_ACCEPT_TOS", "1")
     monkeypatch.setattr(_s2_mod._s2_limiter, "min_interval", 0.0)
 
 
@@ -59,6 +70,13 @@ def _disable_ietf_rate_limit(monkeypatch):
 def _disable_depsdev_rate_limit(monkeypatch):
     """Disable the 1s deps.dev rate limiter in unit tests."""
     monkeypatch.setattr(_packages_mod._depsdev_limiter, "min_interval", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _disable_discourse_rate_limit(monkeypatch):
+    """Disable Discourse per-host rate limiters in unit tests."""
+    monkeypatch.setattr(_discourse_mod, "_DEFAULT_DISCOURSE_INTERVAL", 0.0)
+    _discourse_mod._discourse_limiters.clear()
 
 
 # Sample markdown document used across multiple test modules

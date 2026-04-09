@@ -23,10 +23,10 @@ from .markdown import (
     _TRUST_ADVISORY,
 )
 from .mediawiki import _detect_mediawiki, _fetch_mediawiki_page, _mediawiki_html_to_markdown
-from .semantic_scholar import _detect_s2_url, _fetch_s2_paper
 from .arxiv import _detect_arxiv_url, _fetch_arxiv_paper
 from .doi import _detect_doi_url, _fetch_doi_paper
 from .reddit import _detect_reddit_url, _fetch_reddit_content, _split_by_comments
+from .common import tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +266,7 @@ class _PageCache:
 
         When *renderer* is specified, only returns a hit if the cached entry
         was produced by the same renderer.  This prevents WebFetchJS from
-        reusing sparse content that WebFetchDirect cached from a JS-heavy page.
+        reusing sparse content that WebFetchExact cached from a JS-heavy page.
         """
         # Check protected first (most likely for active pages)
         entry = self._protected.get(url)
@@ -504,7 +504,15 @@ async def _s2_fast_path(url: str) -> Optional[str]:
     """Attempt to fetch a Semantic Scholar paper via the API.
 
     Returns formatted paper details on success, or None to signal fallback.
+    Gated on ``s2_enabled()`` — returns None (fall through) when S2 is not
+    opted in, so the URL proceeds to generic HTTP fetch.
     """
+    from .common import s2_enabled
+    if not s2_enabled():
+        return None
+
+    from .semantic_scholar import _detect_s2_url, _fetch_s2_paper
+
     paper_id = _detect_s2_url(url)
     if not paper_id:
         return None
@@ -587,6 +595,59 @@ async def _reddit_fast_path(url: str, max_tokens: int = 5000) -> Optional[str]:
 
     fm = _build_frontmatter(fm_entries)
     # Reddit markdown already starts with "# {title}" — don't re-add it
+    return fm + "\n\n" + _fence_content(truncated)
+
+
+# ---------------------------------------------------------------------------
+# Discourse fast path (post-fetch, header-based detection)
+# ---------------------------------------------------------------------------
+
+async def _discourse_fast_path(
+    url: str, headers: object, max_tokens: int = 5000,
+) -> Optional[str]:
+    """Handle a Discourse topic URL detected via response headers.
+
+    Unlike other fast paths, this is invoked *after* the initial HTTP fetch —
+    detection relies on the ``x-discourse-route`` response header rather than
+    URL pattern matching.  When the route is ``topics/show``, re-fetches the
+    topic via the JSON API and returns structured content.
+
+    Populates ``_page_cache`` so the caller can dispatch slicing.
+    """
+    from .discourse import (
+        _detect_discourse_headers, _extract_topic_id,
+        _fetch_discourse_content, _split_by_posts,
+    )
+
+    route = _detect_discourse_headers(headers)
+    if not route or not route.startswith("topics/"):
+        return None
+
+    topic_id = _extract_topic_id(url)
+    if topic_id is None:
+        return None
+
+    title, full_markdown = await _fetch_discourse_content(url)
+
+    # Populate cache with post-aware splitting (one slice per post)
+    post_chunks = _split_by_posts(full_markdown)
+    _page_cache.store(
+        url, title, full_markdown,
+        renderer="discourse", presplit=post_chunks,
+    )
+
+    truncated, trunc_hint = _apply_semantic_truncation(full_markdown, max_tokens)
+
+    fm_entries: dict[str, object] = {
+        "source": url,
+        "api": "Discourse",
+        "trust": _TRUST_ADVISORY,
+    }
+    if trunc_hint:
+        fm_entries["truncated"] = trunc_hint
+
+    fm = _build_frontmatter(fm_entries)
+    # Discourse markdown starts with "# {title}" — don't re-add it
     return fm + "\n\n" + _fence_content(truncated)
 
 
@@ -1124,7 +1185,7 @@ async def _github_fast_path(
             "source": f"https://github.com/{match.owner}/{match.repo}/releases",
             "api": "GitHub",
             "type": "releases",
-            "hint": "Use WebFetchDirect with a specific release tag URL for full release notes and assets",
+            "hint": f"Use {tool_name('web_fetch_direct')} with a specific release tag URL for full release notes and assets",
             "trust": _TRUST_ADVISORY,
         })
         return fm + "\n\n" + _fence_content("\n".join(parts), title=f"{match.owner}/{match.repo} releases")
@@ -1169,7 +1230,7 @@ def _process_markdown_sections(
             use it.
         renderer: Tag stored with the cache entry ("direct" or "js") so
             that WebFetchJS won't reuse sparse content cached by
-            WebFetchDirect.
+            WebFetchExact.
     """
     # Populate the page cache before any filtering/truncation
     if cache_url and markdown_content:
@@ -1342,7 +1403,7 @@ def _dispatch_slicing(
     # Reddit markdown already embeds "# {title}" as slice 0's first line
     # (kept so slice ancestry remains informative) — skip re-adding it via
     # _fence_content to avoid a duplicated title heading.
-    title = None if cached.renderer == "reddit" else cached.title
+    title = None if cached.renderer in ("reddit", "discourse") else cached.title
     fm_base = {"source": source_url, "warning": warning}
     if search is not None:
         return _search_slices(url, search, max_tokens, fm_base, title=title) or \

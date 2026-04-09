@@ -3,10 +3,11 @@
 import logging
 import re
 from typing import Optional, Union
+from urllib.parse import urlparse
 
 import httpx
 
-from .common import _FETCH_HEADERS, check_url_ssrf
+from .common import _FETCH_HEADERS, check_url_ssrf, tool_name
 from .markdown import (
     html_to_markdown, _detect_js_dependent,
     _extract_sections_from_markdown, _build_section_list,
@@ -15,7 +16,7 @@ from .markdown import (
 )
 from ._pipeline import (
     _extract_fragment, _normalize_sections, _resolve_fragment_source,
-    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _ietf_fast_path, _doi_fast_path, _reddit_fast_path, _github_fast_path,
+    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _ietf_fast_path, _doi_fast_path, _reddit_fast_path, _discourse_fast_path, _github_fast_path,
     _process_markdown_sections,
     _cached_mediawiki_fetch,
     _page_cache, _search_slices, _get_slices,
@@ -115,7 +116,7 @@ async def web_fetch_direct(
     if want_slicing:
         fm_base = {"source": source_url, "warning": fragment_warning}
         cached = _page_cache.get(url)
-        if cached and cached.renderer in ("direct", "wiki", "reddit", "github"):
+        if cached and cached.renderer in ("direct", "wiki", "reddit", "discourse", "github"):
             fm_base["title"] = cached.title or "Untitled"
             if search is not None:
                 return _search_slices(url, search, max_tokens, fm_base) or \
@@ -172,18 +173,20 @@ async def web_fetch_direct(
     except Exception:
         pass
 
-    # --- Semantic Scholar fast path ---
+    # --- Semantic Scholar fast path (gated on S2 opt-in) ---
     try:
-        from .semantic_scholar import _detect_s2_url
-        if _detect_s2_url(url):
-            if want_slicing:
-                return (
-                    "Error: search/slices not supported for Semantic Scholar URLs. "
-                    "Use the SemanticScholar tool's snippets action instead."
-                )
-            result = await _s2_fast_path(url)
-            if result is not None:
-                return result
+        from .common import s2_enabled
+        if s2_enabled():
+            from .semantic_scholar import _detect_s2_url
+            if _detect_s2_url(url):
+                if want_slicing:
+                    return (
+                        "Error: search/slices not supported for Semantic Scholar URLs. "
+                        "Use the SemanticScholar tool's snippets action instead."
+                    )
+                result = await _s2_fast_path(url)
+                if result is not None:
+                    return result
     except Exception:
         pass
 
@@ -194,7 +197,7 @@ async def web_fetch_direct(
             if want_slicing:
                 return (
                     "Error: search/slices not supported for IETF metadata URLs. "
-                    "Use WebFetchDirect with the RFC's .html URL for full text with search/slices."
+                    f"Use {tool_name('web_fetch_direct')} with the RFC's .html URL for full text with search/slices."
                 )
             result = await _ietf_fast_path(url)
             if result is not None:
@@ -304,6 +307,34 @@ async def web_fetch_direct(
     except httpx.RequestError as e:
         return f"Error: Failed to fetch {url} - {type(e).__name__}"
 
+    # --- Discourse post-fetch detection (header-based) ---
+    try:
+        from .discourse import _detect_discourse_headers
+        if _detect_discourse_headers(response.headers):
+            result = await _discourse_fast_path(url, response.headers, max_tokens)
+            if result is not None:
+                if want_slicing:
+                    return _dispatch_slicing(
+                        url, search, slices,
+                        slices_list if slices is not None else [],
+                        max_tokens, source_url, warning=fragment_warning,
+                    )
+                if section_names:
+                    cached = _page_cache.get(url)
+                    if cached and cached.markdown:
+                        return _process_markdown_sections(
+                            cached.markdown, section_names, max_tokens,
+                            frontmatter_entries={
+                                "source": source_url,
+                                "api": "Discourse",
+                                "warning": fragment_warning,
+                            },
+                            cache_url=url,
+                        )
+                return result
+    except Exception:
+        pass
+
     # Check content type
     content_type = response.headers.get("content-type", "")
     is_html = "text/html" in content_type or "application/xhtml" in content_type
@@ -353,7 +384,7 @@ async def web_fetch_direct(
             fm = _build_frontmatter({
                 "source": source_url,
                 "warning": fragment_warning,
-                "see_also": "WebFetchJS — this page requires JavaScript to render content",
+                "see_also": f"{tool_name('web_fetch_js')} — this page requires JavaScript to render content",
             })
             return fm
         return f"Error: No content extracted from {url}"
@@ -441,7 +472,7 @@ async def _github_sections(
                 "api": "GitHub (raw)",
                 "note": f"No code definitions extracted for {ext} file. "
                         "Grammar may not be installed, or file has no function/class definitions.",
-                "hint": "Use WebFetchDirect to view the file content directly",
+                "hint": f"Use {tool_name('web_fetch_direct')} to view the file content directly",
             })
             return fm
 
@@ -452,7 +483,7 @@ async def _github_sections(
             "language": ext.lstrip("."),
             "definitions": len(defs),
             "trust": _TRUST_ADVISORY,
-            "hint": "Use WebFetchDirect with section= to extract a specific "
+            "hint": f"Use {tool_name('web_fetch_direct')} with section= to extract a specific "
                     "definition, or search= for BM25 keyword search within the file",
         })
         return fm + "\n\n" + _fence_content(section_body, title=match.path)
@@ -485,7 +516,7 @@ async def _github_sections(
             "type": "issue",
             "state": state,
             "trust": _TRUST_ADVISORY,
-            "hint": "Use WebFetchDirect with section='ic_<id>' to extract a "
+            "hint": f"Use {tool_name('web_fetch_direct')} with section='ic_<id>' to extract a "
                     "specific comment, or search= for BM25 keyword search",
         })
         return fm + "\n\n" + _fence_content(section_body, title=title)
@@ -524,7 +555,7 @@ async def _github_sections(
             "type": "pull_request",
             "state": display_state,
             "trust": _TRUST_ADVISORY,
-            "hint": "Use WebFetchDirect with section= to extract a file's "
+            "hint": f"Use {tool_name('web_fetch_direct')} with section= to extract a file's "
                     "review thread or specific comment, or search= for BM25 keyword search",
         })
         return fm + "\n\n" + _fence_content(section_body, title=title)
@@ -583,22 +614,24 @@ async def web_fetch_sections(url: str) -> str:
             "source": original_url,
             "api": "arXiv",
             "note": "Section listing is not applicable for API-sourced paper data. "
-                    f"Use WebFetchDirect with https://arxiv.org/html/{arxiv_id} "
+                    f"Use {tool_name('web_fetch_direct')} with https://arxiv.org/html/{arxiv_id} "
                     "for full paper text with section-aware browsing.",
         })
         return fm
 
     # --- Semantic Scholar fast path (sections not applicable for API data) ---
-    from .semantic_scholar import _detect_s2_url
-    if _detect_s2_url(url):
-        fm = _build_frontmatter({
-            "title": "Semantic Scholar paper",
-            "source": original_url,
-            "api": "Semantic Scholar",
-            "note": "Section listing is not applicable for API-sourced paper data. "
-                    "Use WebFetchDirect or SemanticScholar tool for full content.",
-        })
-        return fm
+    from .common import s2_enabled as _s2_on
+    if _s2_on():
+        from .semantic_scholar import _detect_s2_url
+        if _detect_s2_url(url):
+            fm = _build_frontmatter({
+                "title": "Semantic Scholar paper",
+                "source": original_url,
+                "api": "Semantic Scholar",
+                "note": "Section listing is not applicable for API-sourced paper data. "
+                        f"Use {tool_name('web_fetch_direct')} or {tool_name('semantic_scholar')} tool for full content.",
+            })
+            return fm
 
     # --- IETF fast path (sections: redirect to HTML for section browsing) ---
     from .ietf import _detect_ietf_url
@@ -608,7 +641,7 @@ async def web_fetch_sections(url: str) -> str:
         fm = _build_frontmatter({
             "source": original_url,
             "api": "IETF (RFC Editor)",
-            "note": f"Use WebFetchDirect with https://www.rfc-editor.org/rfc/rfc{n}.html "
+            "note": f"Use {tool_name('web_fetch_direct')} with https://www.rfc-editor.org/rfc/rfc{n}.html "
                     "for full RFC text with section-aware browsing.",
         })
         return fm
@@ -634,7 +667,7 @@ async def web_fetch_sections(url: str) -> str:
                         "source": original_url,
                         "api": "Reddit (.json)",
                         "trust": _TRUST_ADVISORY,
-                        "hint": "Use WebFetchDirect with section=#comment_id to "
+                        "hint": f"Use {tool_name('web_fetch_direct')} with section=#comment_id to "
                                 "extract a specific comment and its replies, "
                                 "or search= for keyword search across comments",
                     })
@@ -645,7 +678,7 @@ async def web_fetch_sections(url: str) -> str:
                 "source": original_url,
                 "api": "Reddit (.json)",
                 "note": "Section listing is only available for comment threads. "
-                        "Use WebFetchDirect with search= for keyword search.",
+                        f"Use {tool_name('web_fetch_direct')} with search= for keyword search.",
             })
             return fm
         except Exception:
@@ -687,6 +720,45 @@ async def web_fetch_sections(url: str) -> str:
     except httpx.RequestError as e:
         return f"Error: Failed to fetch {url} - {type(e).__name__}"
 
+    # --- Discourse post-fetch detection (section tree) ---
+    try:
+        from .discourse import (
+            _detect_discourse_headers, _extract_topic_id,
+            _build_post_section_tree,
+            _base_url_from, _fetch_topic, _fetch_remaining_posts,
+        )
+        route = _detect_discourse_headers(response.headers)
+        if route and route.startswith("topics/"):
+            topic_id = _extract_topic_id(url)
+            if topic_id is not None:
+                base = _base_url_from(url)
+                hostname = urlparse(url).hostname or ""
+                data = await _fetch_topic(base, topic_id, hostname)
+                if isinstance(data, dict):
+                    ps = data.get("post_stream", {})
+                    stream = ps.get("stream", [])
+                    posts = list(ps.get("posts", []))
+                    inline_ids = {p["id"] for p in posts}
+                    remaining = [pid for pid in stream if pid not in inline_ids]
+                    if remaining:
+                        extra = await _fetch_remaining_posts(base, topic_id, remaining, hostname)
+                        if isinstance(extra, list):
+                            posts.extend(extra)
+                    posts.sort(key=lambda p: p.get("post_number", 0))
+
+                    title, section_body = _build_post_section_tree(data, posts)
+                    fm = _build_frontmatter({
+                        "source": original_url,
+                        "api": "Discourse",
+                        "trust": _TRUST_ADVISORY,
+                        "hint": f"Use {tool_name('web_fetch_direct')} with section=N to "
+                                "extract a specific post by number, "
+                                "or search= for keyword search across posts",
+                    })
+                    return fm + "\n\n" + _fence_content(section_body)
+    except Exception:
+        pass
+
     content_type = response.headers.get("content-type", "")
     is_html = "text/html" in content_type or "application/xhtml" in content_type
 
@@ -699,7 +771,7 @@ async def web_fetch_sections(url: str) -> str:
         if _detect_js_dependent(response.text):
             fm = _build_frontmatter({
                 "source": original_url,
-                "see_also": "WebFetchJS — this page requires JavaScript to render content",
+                "see_also": f"{tool_name('web_fetch_js')} — this page requires JavaScript to render content",
             })
             return fm
         return f"Error: No content extracted from {url}"
@@ -726,7 +798,7 @@ def _sections_response(
     entries = {
         "source": url,
         "trust": _TRUST_ADVISORY,
-        "hint": "Use WebFetchDirect with section parameter to extract specific sections by name",
+        "hint": f"Use {tool_name('web_fetch_direct')} with section parameter to extract specific sections by name",
     }
     sections_available = _build_section_list(all_sections, include_slugs=True)
     sections_not_found = None

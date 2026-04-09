@@ -16,7 +16,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import Field
 
-from .common import _API_HEADERS, RateLimiter
+from .common import _API_HEADERS, RateLimiter, tool_name
 from .markdown import _build_frontmatter, _fence_content
 
 logger = logging.getLogger(__name__)
@@ -690,7 +690,7 @@ async def _action_project(query: str) -> str:
         "api": "deps.dev",
         "action": "project",
         "scorecard_score": f"{sc_score}/10" if sc_score is not None else None,
-        "hint": "Use GitHub tool for repo README, issues, and code search",
+        "hint": f"Use {tool_name('github')} tool for repo README, issues, and code search",
     })
 
     return fm + "\n\n" + _fence_content(body, title=None)

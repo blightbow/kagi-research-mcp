@@ -1,10 +1,10 @@
-"""Tests for kagi_research_mcp.doi module."""
+"""Tests for parkour_mcp.doi module."""
 
 import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.doi import (
+from parkour_mcp.doi import (
     ARXIV_DOI_RE,
     _alt_dois_from_relations,
     _build_alert_message,
@@ -25,8 +25,8 @@ from kagi_research_mcp.doi import (
     fetch_formatted_citation,
     _format_csl_json_as_markdown,
 )
-from kagi_research_mcp._pipeline import _doi_fast_path
-from kagi_research_mcp.shelf import _reset_shelf
+from parkour_mcp._pipeline import _doi_fast_path
+from parkour_mcp.shelf import _reset_shelf
 
 
 # ---------------------------------------------------------------------------
@@ -902,7 +902,7 @@ class TestAltDoisFromRelations:
 class TestFetchDoiPaperCrossrefWireIn:
     @pytest.fixture(autouse=True)
     def _use_fresh_shelf(self):
-        from kagi_research_mcp.shelf import _reset_shelf
+        from parkour_mcp.shelf import _reset_shelf
         _reset_shelf()
         yield
         _reset_shelf()

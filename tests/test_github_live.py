@@ -4,14 +4,14 @@ Skipped by default. Run with:
     GITHUB_TOKEN=$(gh auth token) uv run pytest tests/test_github_live.py -v
     GITHUB_TOKEN=$(gh auth token) uv run pytest -m live -v
 
-Requires GITHUB_TOKEN to be set (or ~/.config/kagi/github_token to exist).
+Requires GITHUB_TOKEN to be set (or ~/.config/parkour/github_token to exist).
 Tests are individually skipped if no token is available.
 """
 
 import httpx
 import pytest
 
-from kagi_research_mcp.github import (
+from parkour_mcp.github import (
     _detect_github_url,
     _get_github_token,
     _github_request,
@@ -214,7 +214,7 @@ class TestGitHubRequest:
     async def test_raw_file_fetch(self):
         """Verify raw.githubusercontent.com serves file content."""
         async with httpx.AsyncClient(timeout=15.0) as client:
-            headers = {"User-Agent": "kagi-research-mcp-test"}
+            headers = {"User-Agent": "parkour-mcp-test"}
             token = _get_github_token()
             if token:
                 headers["Authorization"] = f"token {token}"
@@ -239,7 +239,7 @@ class TestCitationCff:
     @pytest.mark.asyncio
     async def test_pytorch_has_doi(self):
         """PyTorch CITATION.cff has a preferred-citation with DOI."""
-        from kagi_research_mcp.github import _fetch_citation_cff, _parse_citation_cff
+        from parkour_mcp.github import _fetch_citation_cff, _parse_citation_cff
         cff = await _fetch_citation_cff("pytorch", "pytorch", "main")
         assert cff is not None
         doi, title, authors, year = _parse_citation_cff(cff)
@@ -253,7 +253,7 @@ class TestCitationCff:
     @pytest.mark.asyncio
     async def test_scikit_learn_no_doi_but_has_metadata(self):
         """scikit-learn CITATION.cff has preferred-citation but no DOI."""
-        from kagi_research_mcp.github import _fetch_citation_cff, _parse_citation_cff
+        from parkour_mcp.github import _fetch_citation_cff, _parse_citation_cff
         cff = await _fetch_citation_cff("scikit-learn", "scikit-learn", "main")
         assert cff is not None
         doi, title, authors, year = _parse_citation_cff(cff)
@@ -265,7 +265,7 @@ class TestCitationCff:
     @pytest.mark.asyncio
     async def test_flask_no_citation_cff(self):
         """Flask has no CITATION.cff."""
-        from kagi_research_mcp.github import _fetch_citation_cff
+        from parkour_mcp.github import _fetch_citation_cff
         cff = await _fetch_citation_cff("pallets", "flask", "main")
         assert cff is None
 
@@ -273,8 +273,8 @@ class TestCitationCff:
     @pytest.mark.asyncio
     async def test_repo_action_tracks_on_shelf(self):
         """The repo action should populate the research shelf."""
-        from kagi_research_mcp.github import github
-        from kagi_research_mcp.shelf import _get_shelf, _reset_shelf
+        from parkour_mcp.github import github
+        from parkour_mcp.shelf import _get_shelf, _reset_shelf
         _reset_shelf()
         result = await github("repo", "pytorch/pytorch")
         assert "shelf:" in result

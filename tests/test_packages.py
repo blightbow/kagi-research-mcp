@@ -1,10 +1,10 @@
-"""Tests for kagi_research_mcp.packages module."""
+"""Tests for parkour_mcp.packages module."""
 
 import httpx
 import pytest
 import respx
 
-from kagi_research_mcp.packages import (
+from parkour_mcp.packages import (
     _cvss_severity,
     _depsdev_get,
     _encode_name,
