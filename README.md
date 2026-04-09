@@ -3,6 +3,7 @@
 > **parkour**
 > 
 > _"an activity in which people move quickly around buildings and objects in a city while performing jumps and other skilful movements, usually trying to move between points as quickly, smoothly, and safely as possible"_
+>
 > -- [Cambridge Dictionary](https://dictionary.cambridge.org/dictionary/english/parkour)
 
 Parkour is a content exploration toolkit that helps LLMs surface high signal, unsummarized web content. It makes extensive use of clean APIs and Markdown conversion to enable targeted content extraction and knowledge synthesis. A rolling 2Q page cache keeps recently visited pages in memory so that follow-up requests (section extraction, BM25 search, slice retrieval, comparison pivots) are served quickly and without additional round-trips. While primarily designed for Claude Code and Claude Desktop, it should be adaptable to most agentic toolchain needs.
@@ -498,6 +499,7 @@ just pack
 ## FAQ
 
 > Why not use HTTP headers instead of YAML frontmatter?
+
 HTTP headers are noisy and largely non-actionable by a LLM. YAML frontmatter occupies a different place in a model's latent spaces, carrying a strong association with content metadata keys that actively drive decisions. This in turn lets us focus on a narrow range of technical terms that have strong latent attractors: "hint", "info", "see_also", "alert", etc. These are low cognitive burden and high confidence. "info" in particular allows us to prevent the model from guessing _why_ a tool behaved the way that it didn't expect, preventing the model from giving up too early or building theories on a flawed hypothesis.
 
 It's a quick and easy hack for getting all the power of TCP and TLS protocol signalling but custom tailored to agentic feedback. 
@@ -572,7 +574,7 @@ No. We use an honest, identifiable User-Agent string so site operators can make 
 
 Parkour is intended to operate as a local sidecar for a human user. Requests originate from your machine, at your direction, from your IP address. This is functionally equivalent to a browser or `curl`, neither of which consult robots.txt. The robots.txt protocol was designed for autonomous crawlers that index content at scale without specific human intent behind each request. Parkour does none of this: it fetches one page at a time, actively avoids generating more requests than necessary, and does not permanently index the content outside of its page cache (the mechanism for avoiding extra lookups).
 
-For context, Anthropic's own `Claude-User` bot [honors robots.txt](https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler) even for user-directed fetches — the most conservative position among AI vendors. OpenAI and Perplexity both treat their user-initiated fetchers as [exempt from robots.txt](https://www.searchenginejournal.com/anthropics-claude-bots-make-robots-txt-decisions-more-granular/568253/). Parkour is further removed from a crawler than any of these: it's a locally-run tool with no training pipeline, no search index, and no autonomous behavior.
+For context, Anthropic [honors robots.txt](https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler) even for user-directed fetches and has the most conservative position among AI vendors. OpenAI and Perplexity both treat their user-initiated fetchers as [exempt from robots.txt](https://www.searchenginejournal.com/anthropics-claude-bots-make-robots-txt-decisions-more-granular/568253/). Parkour is further removed from a crawler than any of these: it's a locally-run tool with no training pipeline, no search index, and performs meaningful extraction at the user's direction. (no blanket scraping)
 
 
 ## Credits
