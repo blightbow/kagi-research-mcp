@@ -83,18 +83,21 @@ class TestLiveWebFetchDirect:
     async def test_wiki_full_page_truncated(self):
         result = await web_fetch_direct(WIKI_URL, max_tokens=200)
         assert result.startswith("---")
-        assert "title:" in result
+        # Frontmatter (trusted, server-generated)
         assert "site: Ultima Codex" in result
         assert "generator: MediaWiki" in result
         assert "truncated:" in result
-        assert "sections:" in result
+        # Fenced content (untrusted: title as heading, sections list)
+        assert "┌─ untrusted content" in result
+        assert "│ # Ultima VIII books" in result
+        assert "│ Sections:" in result
         assert "Honor Lost" in result
-        assert "[content truncated]" in result
 
     @pytest.mark.asyncio
     async def test_wiki_single_section(self):
         result = await web_fetch_direct(WIKI_URL, section="Honor Lost", max_tokens=500)
-        assert "section: Honor Lost" in result
+        assert "┌─ untrusted content" in result
+        assert "# Honor Lost" in result  # section rendered as markdown heading in fence
         assert "Meltzars" in result
 
     @pytest.mark.asyncio
@@ -102,11 +105,11 @@ class TestLiveWebFetchDirect:
         result = await web_fetch_direct(
             WIKI_URL,
             section=["Honor Lost", "The Spell of Divination"],
-            max_tokens=500,
+            max_tokens=2000,
         )
-        assert "sections:" in result
-        assert "Honor Lost" in result
-        assert "The Spell of Divination" in result
+        assert "┌─ untrusted content" in result
+        assert "# Honor Lost" in result
+        assert "# The Spell of Divination" in result
 
     @pytest.mark.asyncio
     async def test_json_endpoint(self):
@@ -118,8 +121,8 @@ class TestLiveWebFetchDirect:
     async def test_html_endpoint_markdown_default(self):
         result = await web_fetch_direct("https://httpbin.org/html")
         assert result.startswith("---")
-        assert "title:" in result
-        assert "Herman Melville" in result
+        assert "┌─ untrusted content" in result
+        assert "│ # Herman Melville" in result  # title rendered as heading in fence
         assert "<document" not in result  # not XML
 
     @pytest.mark.asyncio
@@ -136,17 +139,19 @@ class TestLiveWebFetchJs:
     async def test_wiki_full_page_via_api(self):
         """MediaWiki fast path should return content without launching browser."""
         result = await web_fetch_js(WIKI_URL, max_tokens=200)
-        assert "title:" in result
         assert "site: Ultima Codex" in result
         assert "generator: MediaWiki" in result
         assert "truncated:" in result
-        assert "sections:" in result
+        assert "┌─ untrusted content" in result
+        assert "│ # Ultima VIII books" in result
+        assert "│ Sections:" in result
         assert "Honor Lost" in result
 
     @pytest.mark.asyncio
     async def test_wiki_section_fetch_via_api(self):
         result = await web_fetch_js(WIKI_URL, section="Honor Lost", max_tokens=1000)
-        assert "section: Honor Lost" in result
+        assert "┌─ untrusted content" in result
+        assert "# Honor Lost" in result  # section heading inside fence
         assert "Meltzars" in result
         # Should NOT contain browser: key (fast path skips browser)
         assert "browser:" not in result
@@ -156,10 +161,11 @@ class TestLiveWebFetchJs:
         result = await web_fetch_js(
             WIKI_URL,
             section=["Honor Lost", "The Spell of Divination"],
-            max_tokens=1000,
+            max_tokens=2000,
         )
-        assert "sections:" in result
-        assert "Honor Lost" in result
+        assert "┌─ untrusted content" in result
+        assert "# Honor Lost" in result
+        assert "# The Spell of Divination" in result
 
     @pytest.mark.asyncio
     async def test_non_wiki_uses_browser(self):
