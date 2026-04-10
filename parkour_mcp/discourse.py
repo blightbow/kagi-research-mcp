@@ -325,10 +325,27 @@ def _format_topic(data: dict, all_posts: list[dict]) -> tuple[str, str]:
         f"{views} views",
         _format_timestamp(created),
     ]
-    tags = data.get("tags") or []
-    if tags:
-        meta.append("tags: " + ", ".join(tags))
+    # Discourse's `tags` field is a list of {id, name, slug} dicts on modern
+    # instances; older instances returned bare strings. Accept both.
+    tags_raw = data.get("tags") or []
+    tag_names = [
+        t if isinstance(t, str) else t.get("name", "")
+        for t in tags_raw
+    ]
+    tag_names = [n for n in tag_names if n]
+    if tag_names:
+        meta.append("tags: " + ", ".join(tag_names))
     parts.append(" | ".join(meta) + "\n")
+
+    # Mega-topic warning: topics with >=10000 posts omit `post_stream.stream`
+    # entirely and emit `isMegaTopic: true, lastId: <int>` instead. We can't
+    # batch-fetch the remaining posts, so only the inline ~20 are included.
+    if data.get("post_stream", {}).get("isMegaTopic"):
+        parts.append(
+            f"> **Note:** This is a mega-topic ({posts_count} posts total). "
+            f"Only the first {len(all_posts)} posts are shown — Discourse "
+            f"does not expose the full post stream for very large topics.\n"
+        )
 
     # Posts
     for post in all_posts:
@@ -465,25 +482,22 @@ def _format_search_results(data: dict, base_url: str, limit: int = 10) -> str:
     parts: list[str] = []
 
     if posts:
-        # Build topic_id → topic info map for enrichment
+        # Build topic_id → topic info map for enrichment.  SearchPostSerializer
+        # does NOT emit topic_title — the title must come from the parallel
+        # topics[] array.
         topic_map = {t["id"]: t for t in topics}
 
         for i, post in enumerate(posts, 1):
             topic_id = post.get("topic_id", 0)
-            topic_title = post.get("topic_title", post.get("name", "Untitled"))
+            topic_info = topic_map.get(topic_id, {})
+            topic_title = topic_info.get("title", "Untitled")
             username = post.get("username", "unknown")
             post_num = post.get("post_number", 1)
             blurb = post.get("blurb", "")
-
-            topic_info = topic_map.get(topic_id, {})
             reply_count = topic_info.get("reply_count", 0)
-            views = topic_info.get("views")
 
             parts.append(f"{i}. **{topic_title}**")
-            stats = f"{reply_count} replies"
-            if views:
-                stats += f", {views} views"
-            parts.append(f"   @{username} (post #{post_num}) | {stats}")
+            parts.append(f"   @{username} (post #{post_num}) | {reply_count} replies")
             parts.append(f"   {base_url}/t/{topic_id}/{post_num}")
             if blurb:
                 parts.append(f"   {blurb[:200]}")

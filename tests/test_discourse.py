@@ -60,7 +60,10 @@ SAMPLE_TOPIC_RESPONSE = {
     "reply_count": 1,
     "like_count": 5,
     "category_id": 7,
-    "tags": ["test", "meta"],
+    "tags": [
+        {"id": 1, "name": "test", "slug": "test"},
+        {"id": 2, "name": "meta", "slug": "meta"},
+    ],
     "created_at": "2026-04-01T10:00:00.000Z",
     "slug": "test-topic-title",
     "chunk_size": 20,
@@ -71,27 +74,31 @@ SAMPLE_TOPIC_RESPONSE = {
 }
 
 SAMPLE_SEARCH_RESPONSE = {
+    # Mirrors meta.discourse.org's actual /search.json shape: SearchPostSerializer
+    # does NOT emit topic_title (the post's `name` is the user's display name),
+    # and SearchTopicListItemSerializer does NOT emit `views`. Title and reply
+    # counts must come from the parallel topics[] array.
     "posts": [
         {
             "id": 2001,
             "topic_id": 100,
-            "topic_title": "How to install Discourse",
             "username": "admin",
+            "name": "Admin User",
             "post_number": 1,
             "blurb": "Follow these steps to install Discourse on your server...",
         },
         {
             "id": 2002,
             "topic_id": 200,
-            "topic_title": "Discourse plugin development",
             "username": "dev",
+            "name": "Dev User",
             "post_number": 3,
             "blurb": "Creating plugins requires understanding the Ember frontend...",
         },
     ],
     "topics": [
-        {"id": 100, "title": "How to install Discourse", "reply_count": 5, "views": 100},
-        {"id": 200, "title": "Discourse plugin development", "reply_count": 12, "views": 250},
+        {"id": 100, "title": "How to install Discourse", "reply_count": 5},
+        {"id": 200, "title": "Discourse plugin development", "reply_count": 12},
     ],
 }
 
@@ -232,6 +239,51 @@ class TestFormatTopic:
         assert "upload://" not in md
         assert "[image]" in md
 
+    def test_tags_legacy_string_shape(self):
+        """Older Discourse instances return tags as a list of bare strings."""
+        topic = {**SAMPLE_TOPIC_RESPONSE, "tags": ["alpha", "beta"]}
+        _, md = _format_topic(topic, SAMPLE_POSTS)
+        assert "tags: alpha, beta" in md
+
+    def test_tags_modern_dict_shape(self):
+        """Modern Discourse returns tags as {id, name, slug} dicts."""
+        topic = {
+            **SAMPLE_TOPIC_RESPONSE,
+            "tags": [
+                {"id": 10, "name": "alpha", "slug": "alpha"},
+                {"id": 20, "name": "beta", "slug": "beta"},
+            ],
+        }
+        _, md = _format_topic(topic, SAMPLE_POSTS)
+        assert "tags: alpha, beta" in md
+
+    def test_tags_missing(self):
+        topic = {k: v for k, v in SAMPLE_TOPIC_RESPONSE.items() if k != "tags"}
+        _, md = _format_topic(topic, SAMPLE_POSTS)
+        assert "tags:" not in md
+
+    def test_mega_topic_emits_truncation_note(self):
+        """Topics with >=10k posts omit post_stream.stream and set
+        isMegaTopic: true. We can only surface the inline posts and must
+        clearly tell the caller the rest is unavailable."""
+        topic = {
+            **SAMPLE_TOPIC_RESPONSE,
+            "posts_count": 12345,
+            "post_stream": {
+                "isMegaTopic": True,
+                "lastId": 99999,
+                "posts": SAMPLE_POSTS,
+            },
+        }
+        _, md = _format_topic(topic, SAMPLE_POSTS)
+        assert "mega-topic" in md
+        assert "12345 posts total" in md
+        assert f"first {len(SAMPLE_POSTS)} posts" in md
+
+    def test_normal_topic_no_mega_note(self):
+        _, md = _format_topic(SAMPLE_TOPIC_RESPONSE, SAMPLE_POSTS)
+        assert "mega-topic" not in md
+
 
 # ---------------------------------------------------------------------------
 # _split_by_posts
@@ -314,6 +366,31 @@ class TestFormatSearchResults:
         result = _format_search_results(SAMPLE_SEARCH_RESPONSE, BASE_URL, limit=1)
         assert "How to install Discourse" in result
         assert "Discourse plugin development" not in result
+
+    def test_title_comes_from_topics_array(self):
+        """Regression: SearchPostSerializer never emits topic_title.
+
+        Earlier code fell back to post.get('name'), which is the user's
+        display name (e.g. 'Sam Saffron'), not the topic title. The title
+        must be looked up from the parallel topics[] array via topic_id.
+        """
+        result = _format_search_results(SAMPLE_SEARCH_RESPONSE, BASE_URL)
+        # Real titles from topics[] are present
+        assert "How to install Discourse" in result
+        assert "Discourse plugin development" in result
+        # User display names from posts[].name must NOT leak into headlines
+        assert "**Admin User**" not in result
+        assert "**Dev User**" not in result
+
+    def test_unknown_topic_id_falls_back_to_untitled(self):
+        """If a search post references a topic_id missing from topics[],
+        the title falls back to 'Untitled' rather than crashing."""
+        data = {
+            "posts": [{"id": 1, "topic_id": 999, "username": "u", "post_number": 1, "blurb": ""}],
+            "topics": [],
+        }
+        result = _format_search_results(data, BASE_URL)
+        assert "Untitled" in result
 
 
 # ---------------------------------------------------------------------------
