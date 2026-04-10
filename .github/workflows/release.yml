@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: write    # gh release create + asset upload
-  id-token: write    # PyPI trusted publisher (OIDC)
+  id-token: write    # PyPI trusted publisher + MCP Registry OIDC
 
 jobs:
   release:
@@ -29,12 +29,18 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Derive version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
       - name: Verify tag matches package version
         run: |
-          tag="${GITHUB_REF#refs/tags/v}"
           pkg=$(uv run python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$tag" != "$pkg" ]; then
-            echo "::error::Tag v$tag does not match pyproject.toml version $pkg"
+          if [ "${{ steps.version.outputs.version }}" != "$pkg" ]; then
+            echo "::error::Tag ${{ steps.version.outputs.tag }} does not match pyproject.toml version $pkg"
             exit 1
           fi
 
@@ -47,24 +53,54 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         # Uses OIDC trusted publisher — no token needed.
-        # Configure at: https://pypi.org/manage/project/parkour-mcp/settings/publishing/
+        # Configure at: https://pypi.org/manage/account/publishing/
 
       - name: Pack mcpb bundle
-        run: npx @anthropic-ai/mcpb pack . dist/parkour-mcp.mcpb
-
-      - name: Sign mcpb bundle
-        run: npx @anthropic-ai/mcpb sign dist/parkour-mcp.mcpb
-        env:
-          MCPB_SIGNING_KEY: ${{ secrets.MCPB_SIGNING_KEY }}
+        # Bundles are shipped unsigned. mcpb 2.1.2 has two stacked bugs:
+        # - #21: `mcpb verify` always reports "unsigned" (node-forge p7.verify is unimplemented)
+        # - #194: signed bundles fail Claude Desktop's strict ZIP parser (EOCD comment_length not patched)
+        # Community norm is unsigned + the standard "unsigned extension" warning.
+        # Revisit when Anthropic publishes a fix that includes both #195 and #204.
+        run: npx --yes @anthropic-ai/mcpb pack . dist/parkour-mcp.mcpb
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" \
-            --title "$tag" \
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
             --generate-notes \
             dist/*.tar.gz \
             dist/*.whl \
             dist/parkour-mcp.mcpb
+
+      - name: Install mcp-publisher
+        run: |
+          os=$(uname -s | tr '[:upper:]' '[:lower:]')
+          arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          curl -sSfL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${os}_${arch}.tar.gz" \
+            | tar -xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Render server.json
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          tag="${{ steps.version.outputs.tag }}"
+          sha256=$(sha256sum dist/parkour-mcp.mcpb | cut -d' ' -f1)
+          url="https://github.com/blightbow/parkour-mcp/releases/download/${tag}/parkour-mcp.mcpb"
+          python3 - <<PY
+          import json, pathlib
+          p = pathlib.Path("server.json")
+          data = json.loads(p.read_text())
+          data["version"] = "${version}"
+          data["packages"][0]["identifier"] = "${url}"
+          data["packages"][0]["fileSha256"] = "${sha256}"
+          p.write_text(json.dumps(data, indent=2) + "\n")
+          PY
+          cat server.json
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish

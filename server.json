@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.blightbow/parkour-mcp",
+  "description": "Research synthesis pipeline: web search, content extraction, academic papers, GitHub, RFCs, Discourse forums, and package metadata",
+  "repository": {
+    "url": "https://github.com/blightbow/parkour-mcp",
+    "source": "github"
+  },
+  "version": "0.0.0",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/blightbow/parkour-mcp/releases/download/v0.0.0/parkour-mcp.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

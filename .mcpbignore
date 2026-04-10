@@ -17,6 +17,17 @@ pyrightconfig.json
 CLAUDE.md
 .gitignore
 server.py
+justfile
+.python-version
+
+# MCP Registry metadata (lives in the registry, not the bundle)
+server.json
+
+# Secrets and auth material (must never be packed)
+.mcpregistry_github_token
+.mcpregistry_registry_token
+cert.pem
+key.pem
 
 # Build artifacts
 build/
@@ -27,3 +38,5 @@ wheels/
 # Temporary icon workfiles
 assets/icons/preview.html
 assets/icons/candidates.html
+assets/icon-contour.svg
+assets/icon_preview.png

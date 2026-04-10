@@ -11,3 +11,11 @@ wheels/
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# mcp-publisher local auth tokens (created by `mcp-publisher login`)
+.mcpregistry_github_token
+.mcpregistry_registry_token
+
+# mcpb signing material (should never be committed)
+cert.pem
+key.pem
