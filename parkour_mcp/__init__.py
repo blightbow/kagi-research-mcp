@@ -355,14 +355,18 @@ def main():
         tools.append(("semantic_scholar", semantic_scholar))
     for internal_name, func in tools:
         name = TOOL_NAMES[internal_name][args.profile]
+        # Title is the canonical PascalCase form regardless of active profile
+        # — clients display this in tool pickers (Anthropic Software Directory
+        # Policy 5.E effectively requires it).
+        title = TOOL_NAMES[internal_name]["code"]
         desc = _build_description(internal_name, args.profile)
         icons = _load_tool_icon(internal_name)
         if internal_name == "research_shelf":
             annotations = ToolAnnotations(destructiveHint=True)
         else:
             annotations = ToolAnnotations(readOnlyHint=True)
-        mcp.add_tool(func, name=name, description=desc, icons=icons,
-                      annotations=annotations)
+        mcp.add_tool(func, name=name, title=title, description=desc,
+                     icons=icons, annotations=annotations)
 
     # MCP resource: read-only shelf summary
     @mcp.resource("research://shelf")

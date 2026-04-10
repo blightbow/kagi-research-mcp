@@ -152,6 +152,9 @@ def check_url_ssrf(url: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 # Canonical mapping from internal tool key to profile-specific display names.
+# The ``code`` profile's PascalCase form doubles as the human-readable display
+# title surfaced in client UIs regardless of which profile is active — this is
+# the convention the README and tool docstrings have used since day one.
 TOOL_NAMES: dict[str, dict[str, str]] = {
     "search": {"code": "KagiSearch", "desktop": "kagi_search"},
     "web_fetch_sections": {"code": "WebFetchSections", "desktop": "web_fetch_sections"},
