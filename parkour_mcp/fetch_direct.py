@@ -432,7 +432,7 @@ async def _github_sections(
     from .github import (
         extract_code_definitions, format_code_sections,
         _build_issue_markdown, _build_pr_markdown,
-        _get_github_token,
+        _get_github_token, _sectionize_code, _split_github_comments,
     )
     from .common import _FETCH_HEADERS
     from pathlib import Path
@@ -464,6 +464,15 @@ async def _github_sections(
                 source_text = resp.text
             except Exception:
                 return None
+
+            # Populate the page cache so a follow-up web_fetch_direct call
+            # on the same URL hits the cache instead of re-fetching raw.
+            # Uses the same presplit shape as _github_fast_path's blob branch.
+            presplit = _sectionize_code(source_text, ext)
+            _page_cache.store(
+                original_url, match.path, source_text,
+                renderer="github", presplit=presplit,
+            )
 
         defs = extract_code_definitions(source_text, ext)
         if not defs:
@@ -497,6 +506,14 @@ async def _github_sections(
             return built
         title, raw_md, state, _ = built
 
+        # Populate the page cache so a follow-up web_fetch_direct call on
+        # the same URL hits the cache instead of refetching the issue.
+        comment_chunks = _split_github_comments(raw_md)
+        _page_cache.store(
+            original_url, title, raw_md,
+            renderer="github", presplit=comment_chunks,
+        )
+
         # Extract comment headings as section tree
         lines = []
         for line in raw_md.split("\n"):
@@ -529,6 +546,14 @@ async def _github_sections(
         if isinstance(built, str):
             return built
         title, raw_md, display_state, _ = built
+
+        # Populate the page cache so a follow-up web_fetch_direct call on
+        # the same URL hits the cache instead of refetching the PR.
+        comment_chunks = _split_github_comments(raw_md)
+        _page_cache.store(
+            original_url, title, raw_md,
+            renderer="github", presplit=comment_chunks,
+        )
 
         lines = []
         for line in raw_md.split("\n"):
@@ -654,7 +679,8 @@ async def web_fetch_sections(url: str) -> str:
     # --- Reddit fast path (comment tree as sections) ---
     from .reddit import (
         _detect_reddit_url, _classify_reddit_url, _fetch_reddit_json,
-        _resolve_redd_it, _build_comment_section_tree, RedditPageType,
+        _resolve_redd_it, _build_comment_section_tree, _format_comment_thread,
+        _split_by_comments, RedditPageType,
     )
     reddit_url = _detect_reddit_url(url)
     if reddit_url:
@@ -667,7 +693,17 @@ async def web_fetch_sections(url: str) -> str:
             if page_type == RedditPageType.COMMENT_THREAD:
                 data = await _fetch_reddit_json(reddit_url)
                 if isinstance(data, list) and len(data) >= 2:
-                    title, section_body = _build_comment_section_tree(data)
+                    # Populate the page cache so a follow-up web_fetch_direct
+                    # call on the same URL hits the cache instead of fetching
+                    # and reformatting the .json endpoint a second time.
+                    full_title, full_markdown = _format_comment_thread(data)
+                    comment_chunks = _split_by_comments(full_markdown)
+                    _page_cache.store(
+                        original_url, full_title, full_markdown,
+                        renderer="reddit", presplit=comment_chunks,
+                    )
+
+                    _, section_body = _build_comment_section_tree(data)
                     fm = _build_frontmatter({
                         "source": original_url,
                         "api": "Reddit (.json)",
@@ -704,6 +740,7 @@ async def web_fetch_sections(url: str) -> str:
             markdown_content = _mediawiki_html_to_markdown(wiki_page["html"])
             return _sections_response(
                 wiki_page["title"], original_url, markdown_content, section_names,
+                cache_url=original_url, renderer="wiki",
             )
     except Exception:
         pass
@@ -724,7 +761,7 @@ async def web_fetch_sections(url: str) -> str:
     try:
         from .discourse import (
             _detect_discourse_headers, _extract_topic_id,
-            _build_post_section_tree,
+            _build_post_section_tree, _format_topic, _split_by_posts,
             _base_url_from, _fetch_topic, _fetch_remaining_posts,
         )
         route = _detect_discourse_headers(response.headers)
@@ -746,7 +783,17 @@ async def web_fetch_sections(url: str) -> str:
                             posts.extend(extra)
                     posts.sort(key=lambda p: p.get("post_number", 0))
 
-                    title, section_body = _build_post_section_tree(data, posts)
+                    # Populate the page cache so a follow-up web_fetch_direct
+                    # call on the same URL hits the cache instead of fetching
+                    # the topic JSON a second time.
+                    full_title, full_markdown = _format_topic(data, posts)
+                    post_chunks = _split_by_posts(full_markdown)
+                    _page_cache.store(
+                        original_url, full_title, full_markdown,
+                        renderer="discourse", presplit=post_chunks,
+                    )
+
+                    _, section_body = _build_post_section_tree(data, posts)
                     fm = _build_frontmatter({
                         "source": original_url,
                         "api": "Discourse",
@@ -776,7 +823,10 @@ async def web_fetch_sections(url: str) -> str:
             return fm
         return f"Error: No content extracted from {url}"
 
-    return _sections_response(title, original_url, markdown_content, section_names)
+    return _sections_response(
+        title, original_url, markdown_content, section_names,
+        cache_url=original_url, renderer="direct",
+    )
 
 
 def _sections_response(
@@ -784,8 +834,23 @@ def _sections_response(
     url: str,
     markdown_content: str,
     section_names: Optional[list[str]],
+    cache_url: Optional[str] = None,
+    renderer: Optional[str] = None,
 ) -> str:
-    """Build a sections-only response from markdown content."""
+    """Build a sections-only response from markdown content.
+
+    When *cache_url* is provided, populates ``_page_cache`` with the full
+    markdown before filtering so that a follow-up ``web_fetch_direct`` call
+    hits the cache instead of re-fetching and re-converting.  The *renderer*
+    tag is stored alongside the entry so renderer-scoped cache hits work
+    correctly (e.g. ``web_fetch_direct`` won't reuse content cached from a
+    different pipeline).
+    """
+    if cache_url and markdown_content:
+        _page_cache.store(
+            cache_url, title or "Untitled", markdown_content, renderer=renderer,
+        )
+
     all_sections = _extract_sections_from_markdown(markdown_content)
 
     if not all_sections:
