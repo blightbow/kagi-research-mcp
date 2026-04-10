@@ -408,7 +408,6 @@ async def _fetch_s2_paper(paper_id: str) -> str:
             alt_dois=alt_dois,
             source_tool="semantic_scholar",
             bibtex=citation_styles.get("bibtex"),
-            citation_apa=citation_text,
             orcids={
                 a.get("name", ""): (a.get("externalIds") or {}).get("ORCID", "")
                 for a in authors

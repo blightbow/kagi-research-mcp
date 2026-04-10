@@ -769,7 +769,6 @@ async def _fetch_doi_paper(doi: str) -> str:
         venue=(csl_data or {}).get("container-title"),
         alt_dois=_alt_dois_from_relations(relations),
         source_tool="doi",
-        citation_apa=citation_text,
         orcids=datacite.get("orcids") if datacite else None,
         retraction=retraction,
     ))

@@ -127,20 +127,6 @@ _rate_limits: dict[str, _GitHubRateLimit] = {}
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 1.0  # seconds; constant backoff (gh CLI pattern)
 
-# Link header pagination regex
-_LINK_RE = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
-
-
-def _next_page_url(link_header: Optional[str]) -> Optional[str]:
-    """Extract the 'next' URL from a Link response header."""
-    if not link_header:
-        return None
-    for match in _LINK_RE.finditer(link_header):
-        if match.group(2) == "next":
-            return match.group(1)
-    return None
-
-
 async def _github_request(
     method: str,
     path: str,

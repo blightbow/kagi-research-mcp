@@ -7,7 +7,6 @@ import respx
 from parkour_mcp.github import (
     _detect_github_url,
     _github_request,
-    _next_page_url,
     _parse_citation_cff,
     _parse_owner_repo,
     _parse_owner_repo_number,
@@ -187,23 +186,6 @@ class TestQueryParsing:
     def test_owner_repo_path_invalid(self):
         result = _parse_owner_repo_path("facebook/react")
         assert isinstance(result, str) and "Error" in result
-
-
-# ---------------------------------------------------------------------------
-# Link header parsing
-# ---------------------------------------------------------------------------
-
-class TestNextPageUrl:
-    def test_extracts_next(self):
-        link = '<https://api.github.com/repos/x/y?page=2>; rel="next", <https://api.github.com/repos/x/y?page=5>; rel="last"'
-        assert _next_page_url(link) == "https://api.github.com/repos/x/y?page=2"
-
-    def test_no_next(self):
-        link = '<https://api.github.com/repos/x/y?page=1>; rel="prev"'
-        assert _next_page_url(link) is None
-
-    def test_none(self):
-        assert _next_page_url(None) is None
 
 
 # ---------------------------------------------------------------------------
