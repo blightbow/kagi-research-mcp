@@ -4,8 +4,8 @@ import re
 from typing import Optional
 from urllib.parse import unquote
 
+import htmd
 from bs4 import BeautifulSoup
-from html_to_markdown import ConversionOptions, convert as _h2m_convert
 from markdownify import MarkdownConverter
 
 
@@ -15,7 +15,7 @@ class TextOnlyConverter(MarkdownConverter):
     Retained for ``_mediawiki_html_to_markdown`` which applies MediaWiki-specific
     BS4 transforms (navbox pruning, math extraction, citation footnote rewriting)
     before conversion. The generic HTML path in ``html_to_markdown()`` uses the
-    Rust-backed ``html-to-markdown`` library directly.
+    Rust-backed ``htmd`` library directly.
     """
 
     def convert_img(self, el, text, parent_tags):
@@ -89,9 +89,9 @@ def _clean_headings(soup: BeautifulSoup) -> None:
             tag.unwrap()
 
 
-# Regex matchers for stripping inline markdown formatting from heading text
-# captured by the visitor. The Rust ``visit_heading`` callback receives
-# already-rendered markdown (e.g. ``Real **Heading** With [link](x)``), whereas
+# Regex matchers for stripping inline markdown formatting from heading text.
+# ``htmd`` preserves inline children inside headings (e.g. ``<h1>Real
+# <strong>Heading</strong></h1>`` renders as ``# Real **Heading**``), whereas
 # the downstream section-extraction logic expects plain text.
 _HEADING_MD_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _HEADING_MD_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
@@ -103,12 +103,10 @@ _HEADING_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 def _strip_heading_markdown(text: str) -> str:
     """Recover plain text from rendered-markdown heading text.
 
-    The Rust ``html-to-markdown`` library preserves inline children inside
-    headings (e.g. ``<h1>Real <strong>Heading</strong></h1>`` renders as
-    ``# Real **Heading**``). We undo the common inline transforms so
-    heading labels match what the previous ``_clean_headings`` +
-    ``get_text(strip=True)`` path produced. Strips images before links,
-    links before emphasis, bold before italic to avoid partial overlaps.
+    Undoes the common inline transforms so heading labels match what the
+    pre-port ``_clean_headings`` + ``get_text(strip=True)`` path produced.
+    Strips images before links, links before emphasis, bold before italic
+    to avoid partial overlaps.
     """
     text = _HEADING_MD_IMAGE.sub(r"\1", text)
     text = _HEADING_MD_LINK.sub(r"\1", text)
@@ -118,69 +116,51 @@ def _strip_heading_markdown(text: str) -> str:
     return text.strip()
 
 
-# Matches a markdown heading line (``##`` through ``######``) with trailing
+# Matches a markdown heading line (``#`` through ``######``) with trailing
 # whitespace trimmed. Used by ``html_to_markdown()`` to strip inline markup
 # from heading lines once at conversion time, so the cached markdown matches
 # the pre-port ``_clean_headings`` output format and section-name extraction
 # stays on its pre-port fast path.
 _HEADING_LINE_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 
+# Matches the first level-1 heading line in cleaned markdown output. Used to
+# recover the h1-first title behavior without re-parsing the source HTML.
+_FIRST_H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
+
 
 def _strip_heading_line(match: "re.Match[str]") -> str:
     return f"{match.group(1)} {_strip_heading_markdown(match.group(2))}"
 
 
-class _TextOnlyVisitor:
-    """html-to-markdown visitor replicating the old TextOnlyConverter semantics.
-
-    - Drops noise tags entirely (``<script>``, ``<style>``, ``<nav>``,
-      ``<header>``, ``<footer>``, ``<aside>``, ``<noscript>``) via
-      ``visit_element_start`` returning ``{"type": "skip"}``.
-    - Renders ``<img alt="x">`` as ``[Image: x]``; drops images with no alt.
-    - Drops image-only ``<a>`` wrappers so the inner image text stands alone.
-    - Captures the first ``<h1>`` text for title fallback in
-      ``html_to_markdown()``, with inline markdown stripped back to plain text.
-    """
-
-    def __init__(self) -> None:
-        self.first_h1: Optional[str] = None
-
-    def visit_element_start(self, ctx):
-        if ctx.get("tag_name") in _NOISE_TAGS_SET:
-            return {"type": "skip"}
-        return {"type": "continue"}
-
-    def visit_heading(self, ctx, level, text, id_):
-        del ctx, id_
-        if level == 1 and self.first_h1 is None:
-            self.first_h1 = _strip_heading_markdown(text or "")
-        return {"type": "continue"}
-
-    def visit_image(self, ctx, src, alt, title):
-        del ctx, src, title
-        alt_text = (alt or "").strip()
-        if alt_text:
-            return {"type": "custom", "output": f"[Image: {alt_text}]"}
-        return {"type": "skip"}
-
-    def visit_link(self, ctx, href, text, title):
-        del ctx, href, title
-        stripped = (text or "").strip()
-        # Drop image-only link wrappers: the inner text begins with [Image:
-        # because visit_image has already replaced the <img> child.
-        if not stripped or stripped.startswith("[Image:"):
-            return {"type": "custom", "output": stripped}
-        return {"type": "continue"}
+# Built once; ``htmd.Options`` is an immutable configuration snapshot that
+# replicates the prior ``TextOnlyConverter`` semantics via flat fields
+# (``skip_tags`` decomposes noise, ``image_placeholder`` renders images as
+# ``[Image: alt]``, ``drop_empty_alt_images`` drops images without alt text,
+# ``drop_image_only_links`` strips ``<a>`` wrappers whose only child is an
+# image).
+#
+# Noise tags used by the generic path additionally include ``head`` to
+# suppress the ``<title>`` + ``<meta>`` text that would otherwise leak into
+# the top of the converted output. The pre-port path avoided this by
+# converting only ``<body>`` / ``<main>`` / ``<article>``; htmd converts the
+# full document, so we drop ``<head>`` at the skip-tags layer instead.
+_HTMD_SKIP_TAGS: list[str] = [*_NOISE_TAGS, "head"]
 
 
-# Built once; ConversionOptions is an immutable configuration snapshot.
-# extract_metadata is disabled because combining a visitor with metadata
-# extraction in the Python binding leaves result["metadata"] empty
-# (see blightbow/parkour-mcp#4 and kreuzberg-dev/html-to-markdown#275).
-_H2M_OPTIONS = ConversionOptions(
-    heading_style="atx",
-    extract_metadata=False,
-)
+def _build_htmd_options():
+    # ``htmd`` is a compiled PyO3 module with no .pyi stubs, so ty can't see
+    # its public symbols. The runtime call is correct; suppress the static
+    # check on the bare attribute lookups.
+    opts = htmd.Options()  # ty: ignore[unresolved-attribute]
+    opts.heading_style = "atx"
+    opts.skip_tags = list(_HTMD_SKIP_TAGS)
+    opts.image_placeholder = "[Image: {alt}]"
+    opts.drop_empty_alt_images = True
+    opts.drop_image_only_links = True
+    return opts
+
+
+_HTMD_OPTIONS = _build_htmd_options()
 
 # Byte budget for the head-only BS4 fallback parse. 32 KB is well above any
 # realistic <head> size and still parses in microseconds on html.parser.
@@ -191,12 +171,9 @@ def _extract_head_title(html: str) -> str:
     """Fallback title extraction for pages with no ``<h1>``.
 
     Parses only the first ``_HEAD_SCAN_BYTES`` of HTML to find ``og:title``
-    or ``<title>``. Matches the og:title > <title> > "Untitled" tail of the
-    prior title-resolution ladder; the h1-first step is handled inside
-    ``_TextOnlyVisitor``.
-
-    See blightbow/parkour-mcp#4 for the follow-up that drops this fallback
-    once structured metadata is available alongside the visitor.
+    or ``<title>``. Matches the ``og:title > <title> > "Untitled"`` tail of
+    the prior title-resolution ladder; the h1-first step is handled by
+    ``_FIRST_H1_RE`` over the converted markdown.
     """
     head_chunk = html[:_HEAD_SCAN_BYTES]
     soup = BeautifulSoup(head_chunk, "html.parser")
@@ -215,27 +192,30 @@ def _extract_head_title(html: str) -> str:
 def html_to_markdown(html: str) -> tuple[str, str]:
     """Convert HTML to clean markdown, returning ``(title, markdown)``.
 
-    Uses the Rust-backed ``html-to-markdown`` library with a visitor that
-    drops noise elements and replicates the prior TextOnlyConverter
-    semantics for images and image-only links. Yields a ~60-75x speedup
-    over the previous markdownify + BS4 path on megapages, with the same
-    public interface.
+    Uses the Rust-backed ``htmd`` library with a flat ``Options``
+    configuration that replicates the prior ``TextOnlyConverter`` semantics:
+    noise tags are decomposed via ``skip_tags``, images render as
+    ``[Image: alt]`` via ``image_placeholder``, empty-alt images are dropped,
+    and image-only ``<a>`` wrappers are collapsed to their inner content.
+    Measured speedup over the previous markdownify + BS4 path is roughly
+    30x on small pages, 40x on megapage specs, and 50x on the pathological
+    tier (the WHATWG HTML spec), while producing the full converted content
+    at every size (no silent truncation).
 
-    Title priority matches the prior behavior: the first ``<h1>`` wins
-    (captured via ``visit_heading`` during conversion), falling back to
-    ``og:title`` or ``<title>`` via a small head-only BS4 parse for pages
-    with no h1, and finally ``"Untitled"``.
+    Title priority matches the prior behavior: the first ``<h1>`` in the
+    converted markdown wins, falling back to ``og:title`` or ``<title>`` via
+    a small head-only BS4 parse for pages with no h1, and finally
+    ``"Untitled"``.
     """
-    visitor = _TextOnlyVisitor()
-    result = _h2m_convert(html, options=_H2M_OPTIONS, visitor=visitor)
-    markdown = result.get("content") or ""
+    markdown = htmd.convert_html(html, _HTMD_OPTIONS)  # ty: ignore[unresolved-attribute]
     markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
     # Strip inline markup from heading lines once, at conversion time, so
     # downstream section-name extraction sees plain text without paying a
     # per-call strip cost. Matches the pre-port ``_clean_headings`` output.
     markdown = _HEADING_LINE_RE.sub(_strip_heading_line, markdown)
 
-    title = visitor.first_h1 or _extract_head_title(html)
+    first_h1 = _FIRST_H1_RE.search(markdown)
+    title = first_h1.group(1).strip() if first_h1 else _extract_head_title(html)
     return title, markdown
 
 
