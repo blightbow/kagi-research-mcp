@@ -80,6 +80,7 @@ exclude = [".vulture_whitelist.py"]
 
 [dependency-groups]
 dev = [
+    "html-to-markdown>=3.1.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-ruff>=0.5",
