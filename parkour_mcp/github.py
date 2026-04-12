@@ -16,6 +16,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Optional
+from urllib.parse import quote as _urlquote_raw
+
+
+def _urlquote(s: str) -> str:
+    """URL-encode a GitHub search query, preserving : and / for readability."""
+    return _urlquote_raw(s, safe=":/")
+
 
 import httpx
 from pydantic import Field
@@ -846,6 +853,46 @@ def _fm_base(source: str, api: str = "GitHub") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Helpers: search qualifier extraction
+# ---------------------------------------------------------------------------
+
+# repo:owner/name — with or without quotes
+_RE_REPO_QUAL = re.compile(r'repo:(?:"([^"]+)"|(\S+))')
+# label:name — with or without quotes
+_RE_LABEL_QUAL = re.compile(r'label:(?:"([^"]+)"|(\S+))')
+
+
+async def _label_hint_for_empty_search(query: str) -> Optional[str]:
+    """When an issue search returns 0 results and uses label: + repo:
+    qualifiers, fetch the repo's labels and return a hint string listing
+    them.  Returns None if the qualifiers are absent or the label fetch
+    fails."""
+    repo_m = _RE_REPO_QUAL.search(query)
+    label_m = _RE_LABEL_QUAL.search(query)
+    if not repo_m or not label_m:
+        return None
+
+    repo = repo_m.group(1) or repo_m.group(2)
+    asked = label_m.group(1) or label_m.group(2)
+
+    labels_result = await _github_request(
+        "GET", f"/repos/{repo}/labels",
+        params={"per_page": "100"},
+    )
+    if isinstance(labels_result, str) or not isinstance(labels_result, list):
+        return None
+
+    names = sorted(lb["name"] for lb in labels_result if "name" in lb)
+    if not names:
+        return None
+
+    return (
+        f"label:{asked} matched nothing — "
+        f"{repo} uses: {', '.join(names)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Action: search_issues
 # ---------------------------------------------------------------------------
 
@@ -865,15 +912,25 @@ async def _action_search_issues(
     total = result.get("total_count", 0)
     incomplete = result.get("incomplete_results", False)
 
-    fm_entries = _fm_base(f"https://github.com/search?q={query}&type=issues")
+    fm_entries = _fm_base(
+        f"https://github.com/search?q={_urlquote(query)}&type=issues",
+    )
     fm_entries["total_results"] = total
     fm_entries["showing"] = f"{len(items)} (page {page})"
     if incomplete:
         fm_entries["note"] = "Results may be incomplete (search timed out)"
-    fm = _build_frontmatter(fm_entries)
 
     if not items:
+        # When a label: qualifier produced zero results against a single
+        # repo, fetch the repo's actual labels so the agent can retry
+        # with a corrected name instead of guessing.
+        hint = await _label_hint_for_empty_search(query)
+        if hint:
+            fm_entries["hint"] = hint
+        fm = _build_frontmatter(fm_entries)
         return fm + "\n\nNo results found."
+
+    fm = _build_frontmatter(fm_entries)
 
     lines = []
     for item in items:
@@ -913,7 +970,7 @@ async def _action_search_code(
     items = result.get("items", [])
     total = result.get("total_count", 0)
 
-    fm_entries = _fm_base(f"https://github.com/search?q={query}&type=code")
+    fm_entries = _fm_base(f"https://github.com/search?q={_urlquote(query)}&type=code")
     fm_entries["total_results"] = total
     fm_entries["showing"] = f"{len(items)} (page {page})"
     fm = _build_frontmatter(fm_entries)
@@ -962,7 +1019,7 @@ async def _action_search_repos(
     total = result.get("total_count", 0)
     incomplete = result.get("incomplete_results", False)
 
-    fm_entries = _fm_base(f"https://github.com/search?q={query}&type=repositories")
+    fm_entries = _fm_base(f"https://github.com/search?q={_urlquote(query)}&type=repositories")
     fm_entries["total_results"] = total
     fm_entries["showing"] = f"{len(items)} (page {page})"
     if incomplete:

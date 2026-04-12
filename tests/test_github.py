@@ -280,6 +280,43 @@ class TestSearchIssues:
         result = await github("search_issues", "nothing", limit=5)
         assert "No results" in result
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_results_label_hint(self):
+        """Zero results with label: qualifier fetches repo labels for hint."""
+        respx.get("https://api.github.com/search/issues").mock(
+            return_value=httpx.Response(200, json={
+                "total_count": 0, "incomplete_results": False, "items": [],
+            })
+        )
+        respx.get("https://api.github.com/repos/owner/repo/labels").mock(
+            return_value=httpx.Response(200, json=[
+                {"name": "class:bug"},
+                {"name": "class:feature"},
+                {"name": "priority:high"},
+            ])
+        )
+        result = await github(
+            "search_issues", "repo:owner/repo is:open label:bug", limit=5,
+        )
+        assert "No results" in result
+        assert "label:bug matched nothing" in result
+        assert "class:bug" in result
+        assert "class:feature" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_results_label_hint_skipped_without_repo(self):
+        """No label hint when repo: qualifier is absent."""
+        respx.get("https://api.github.com/search/issues").mock(
+            return_value=httpx.Response(200, json={
+                "total_count": 0, "incomplete_results": False, "items": [],
+            })
+        )
+        result = await github("search_issues", "label:bug is:open", limit=5)
+        assert "No results" in result
+        assert "matched nothing" not in result
+
 
 # ---------------------------------------------------------------------------
 # Action: search_repos (mocked)
