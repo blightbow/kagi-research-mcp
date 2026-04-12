@@ -87,7 +87,7 @@ PROFILE_VARS = {
     "code": {
         "search": "WebSearch",
         "fetch": "WebFetch",
-        "fetch_direct": "WebFetchExact",
+        "fetch_direct": "WebFetchIncisive",
         "summarize": "KagiSummarize",
         "fetch_direct_when_to_use": (
             "Unlike WebFetch, fetches through the user's device instead of proxying through\n"
@@ -101,7 +101,7 @@ PROFILE_VARS = {
     "desktop": {
         "search": "web_search",
         "fetch": "web_fetch",
-        "fetch_direct": "web_fetch_exact",
+        "fetch_direct": "web_fetch_incisive",
         "summarize": "kagi_summarize",
         "fetch_direct_when_to_use": (
             "Unlike web_fetch, fetches through the user's device instead of proxying through\n"

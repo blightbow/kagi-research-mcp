@@ -267,7 +267,7 @@ class _PageCache:
 
         When *renderer* is specified, only returns a hit if the cached entry
         was produced by the same renderer.  This prevents WebFetchJS from
-        reusing sparse content that WebFetchExact cached from a JS-heavy page.
+        reusing sparse content that WebFetchIncisive cached from a JS-heavy page.
         """
         # Check protected first (most likely for active pages)
         entry = self._protected.get(url)
@@ -1231,7 +1231,7 @@ def _process_markdown_sections(
             use it.
         renderer: Tag stored with the cache entry ("direct" or "js") so
             that WebFetchJS won't reuse sparse content cached by
-            WebFetchExact.
+            WebFetchIncisive.
     """
     # Populate the page cache before any filtering/truncation
     if cache_url and markdown_content:
