@@ -460,8 +460,21 @@ package contributors and are potential injection vectors.
 |----------|-------------|
 | `source` | GitHub repo URL |
 | `api`    | `GitHub` |
-| `hint`   | README truncation drill-in guidance (when README exceeds ~2000 tokens) |
+| `hint`   | README truncation drill-in guidance, and/or issue-template steering (when `.github/ISSUE_TEMPLATE/` exists, pointing at the `issue_templates` action). Rendered as a YAML list when both apply. |
 | `shelf`  | Research shelf tracking status (from CITATION.cff or repo metadata) |
+
+**`issue_templates` action:**
+
+| Field    | Description |
+|----------|-------------|
+| `source` | GitHub issue chooser URL (`https://github.com/{owner}/{repo}/issues/new/choose`) |
+| `api`    | `GitHub` |
+| `note`   | Structural summary of detected templates: counts of custom forms and markdown templates, `blank_issues_enabled: false` when set, and number of contact links. Structural signals only — contributor-supplied contact link names, URLs, and `about` text are rendered inside the fenced body section. |
+| `trust`  | Trust advisory for fenced content |
+
+The `issue` and `pull_request` actions also emit the issue-template
+`hint` when the surrounding repo has a `.github/ISSUE_TEMPLATE/`
+directory, merged into the existing `hint` list as needed.
 
 **`issue` and `pull_request` actions:**
 

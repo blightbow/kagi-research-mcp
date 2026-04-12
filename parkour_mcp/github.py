@@ -14,9 +14,10 @@ import base64
 import logging
 import os
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Awaitable, Callable, Optional
 
 import httpx
 from pydantic import Field
@@ -961,6 +962,51 @@ async def _action_search_code(
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Repo metadata cache — shared across slow-churning .github/ file fetches
+# ---------------------------------------------------------------------------
+#
+# Several repo-level configuration files (CITATION.cff,
+# .github/ISSUE_TEMPLATE/ listings, .github/ISSUE_TEMPLATE/config.yml) are
+# fetched per repo action and change rarely within a session. Routing them
+# through a single LRU cache means: (a) the second `repo` action for the
+# same owner/repo hits cache for all of them, (b) negative results (404s)
+# are remembered so we don't re-pay the miss, and (c) concurrent fetches
+# for the same key coalesce into one network call via the async lock.
+
+_REPO_METADATA_CACHE_MAX = 64
+_repo_metadata_cache: "OrderedDict[str, Any]" = OrderedDict()
+_repo_metadata_cache_lock = asyncio.Lock()
+
+
+def _reset_repo_metadata_cache() -> None:
+    """Clear the repo metadata cache. Intended for test teardown."""
+    _repo_metadata_cache.clear()
+
+
+async def _cached_repo_fetch(
+    cache_key: str,
+    fetcher: Callable[[], Awaitable[Any]],
+) -> Any:
+    """Cache-through wrapper for repo metadata file fetches.
+
+    Calls ``fetcher()`` on miss, stores the result (including ``None``
+    for negative caching), and returns the cached value on hit. Async-safe:
+    the lock is held across the fetch so concurrent callers for the same
+    key coalesce into a single network request.
+    """
+    async with _repo_metadata_cache_lock:
+        if cache_key in _repo_metadata_cache:
+            _repo_metadata_cache.move_to_end(cache_key)
+            return _repo_metadata_cache[cache_key]
+
+        value = await fetcher()
+        _repo_metadata_cache[cache_key] = value
+        if len(_repo_metadata_cache) > _REPO_METADATA_CACHE_MAX:
+            _repo_metadata_cache.popitem(last=False)
+        return value
+
+
+# ---------------------------------------------------------------------------
 # CITATION.cff parsing and shelf integration
 # ---------------------------------------------------------------------------
 
@@ -973,19 +1019,303 @@ async def _fetch_citation_cff(
     raw_url = (
         f"https://raw.githubusercontent.com/{owner}/{repo}/{default_branch}/CITATION.cff"
     )
-    headers = {"User-Agent": _API_USER_AGENT}
-    token = _get_github_token()
-    if token:
-        headers["Authorization"] = f"token {token}"
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(raw_url, headers=headers)
-        if resp.status_code != 200:
+    async def _do_fetch() -> Optional[dict]:
+        headers = {"User-Agent": _API_USER_AGENT}
+        token = _get_github_token()
+        if token:
+            headers["Authorization"] = f"token {token}"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(raw_url, headers=headers)
+            if resp.status_code != 200:
+                return None
+            return yaml.safe_load(resp.text)
+        except Exception:
             return None
-        return yaml.safe_load(resp.text)
-    except Exception:
+
+    return await _cached_repo_fetch(raw_url, _do_fetch)
+
+
+# ---------------------------------------------------------------------------
+# Issue template probe (.github/ISSUE_TEMPLATE/)
+# ---------------------------------------------------------------------------
+
+_ISSUE_TEMPLATE_DIR = ".github/ISSUE_TEMPLATE"
+
+
+async def _fetch_issue_template_listing(
+    owner: str, repo: str,
+) -> Optional[list[dict]]:
+    """List entries in ``.github/ISSUE_TEMPLATE/`` on the default branch.
+
+    Returns the contents-API list (one dict per file) if the directory
+    exists, or ``None`` if the directory is absent or the response is
+    unexpected. Cached.
+    """
+    api_path = f"/repos/{owner}/{repo}/contents/{_ISSUE_TEMPLATE_DIR}"
+
+    async def _do_fetch() -> Optional[list[dict]]:
+        result = await _github_request("GET", api_path)
+        if isinstance(result, list):
+            return result
         return None
+
+    return await _cached_repo_fetch(api_path, _do_fetch)
+
+
+async def _fetch_issue_template_config_yml(
+    owner: str, repo: str,
+) -> Optional[dict]:
+    """Fetch and parse ``.github/ISSUE_TEMPLATE/config.yml`` via contents API.
+
+    Uses the repo's default branch implicitly (contents API resolves it
+    server-side), so we never need to know the default branch ourselves.
+    Returns the parsed YAML dict, or ``None`` on any failure (404, parse
+    error, network error). Cached.
+    """
+    import yaml
+
+    api_path = f"/repos/{owner}/{repo}/contents/{_ISSUE_TEMPLATE_DIR}/config.yml"
+
+    async def _do_fetch() -> Optional[dict]:
+        result = await _github_request("GET", api_path)
+        if not isinstance(result, dict):
+            return None
+        encoded = result.get("content")
+        if not isinstance(encoded, str):
+            return None
+        try:
+            text = base64.b64decode(encoded).decode("utf-8")
+            parsed = yaml.safe_load(text)
+        except Exception:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return parsed
+
+    return await _cached_repo_fetch(api_path, _do_fetch)
+
+
+async def _probe_issue_templates(
+    owner: str, repo: str,
+) -> Optional[dict]:
+    """Probe a repo's ``.github/ISSUE_TEMPLATE/`` configuration.
+
+    Returns a structured dict describing custom issue forms, markdown
+    templates, and routing configuration (contact links, blank-issues
+    toggle), or ``None`` if the repo has nothing worth advising about.
+
+    The returned ``contact_links`` value is raw contributor-supplied data
+    and MUST NOT be placed in frontmatter. The body formatter surfaces it
+    inside the fenced content zone where the datamarking defense applies.
+    """
+    listing = await _fetch_issue_template_listing(owner, repo)
+    if listing is None:
+        return None
+
+    forms: list[str] = []
+    markdown_templates: list[str] = []
+    has_config = False
+    for entry in listing:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") != "file":
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str):
+            continue
+        if name == "config.yml" or name == "config.yaml":
+            has_config = True
+            continue
+        lower = name.lower()
+        if lower.endswith((".yml", ".yaml")):
+            forms.append(name)
+        elif lower.endswith(".md"):
+            markdown_templates.append(name)
+
+    config: Optional[dict] = None
+    if has_config:
+        config = await _fetch_issue_template_config_yml(owner, repo)
+
+    blank_issues_enabled: Optional[bool] = None
+    contact_links: Optional[list[dict]] = None
+    if config is not None:
+        raw_flag = config.get("blank_issues_enabled")
+        if isinstance(raw_flag, bool):
+            blank_issues_enabled = raw_flag
+        raw_links = config.get("contact_links")
+        if isinstance(raw_links, list):
+            contact_links = [cl for cl in raw_links if isinstance(cl, dict)]
+
+    if (
+        not forms
+        and not markdown_templates
+        and blank_issues_enabled is not False
+        and not contact_links
+    ):
+        return None
+
+    return {
+        "forms": forms,
+        "markdown_templates": markdown_templates,
+        "blank_issues_enabled": blank_issues_enabled,
+        "contact_links": contact_links,
+    }
+
+
+def _build_issue_template_hint(owner: str, repo: str) -> str:
+    """Short steering hint pointing at the ``issue_templates`` action.
+
+    Fired from any repo-scoped action (``repo``, ``issue``,
+    ``pull_request``) when ``.github/ISSUE_TEMPLATE/`` exists. Designed
+    to be cheap (tens of tokens) — the full advisory lives in the
+    dedicated action.
+    """
+    return (
+        f"Custom issue submission flow detected at {owner}/{repo}. "
+        f"Use {tool_name('github')} issue_templates action with "
+        f"'{owner}/{repo}' for forms, contact links, and filing guidance "
+        f"before opening an issue via API."
+    )
+
+
+async def _maybe_issue_template_hint(
+    owner: str, repo: str,
+) -> Optional[str]:
+    """Return the steering hint if the repo has a custom submission flow.
+
+    Wraps the cached directory-listing fetch. Returns ``None`` when the
+    repo has no ``.github/ISSUE_TEMPLATE/`` directory (or it is empty).
+    Safe to call from multiple actions — cache coalesces the fetch.
+    """
+    listing = await _fetch_issue_template_listing(owner, repo)
+    if not listing:
+        return None
+    return _build_issue_template_hint(owner, repo)
+
+
+def _merge_hint(fm_entries: dict, extra: Optional[str]) -> None:
+    """Fold ``extra`` into ``fm_entries['hint']`` as scalar or list.
+
+    Empty/None extras are ignored. First hint lands as a scalar;
+    subsequent hints promote the field to a YAML sequence — rendered
+    by ``_build_frontmatter`` as a multi-item list
+    (frontmatter-standard.md:146-158).
+    """
+    if not extra:
+        return
+    existing = fm_entries.get("hint")
+    if existing is None:
+        fm_entries["hint"] = extra
+    elif isinstance(existing, list):
+        fm_entries["hint"] = [*existing, extra]
+    else:
+        fm_entries["hint"] = [existing, extra]
+
+
+def _build_issue_template_note(
+    probe: Optional[dict], owner: str, repo: str,
+) -> Optional[str]:
+    """Compose the frontmatter ``note:`` advisory from structural signals.
+
+    Uses counts, boolean flags, and a server-built chooser URL only —
+    never contributor-supplied strings (names, URLs, "about" text). Those
+    live inside the fenced body section.
+    """
+    if probe is None:
+        return None
+
+    parts: list[str] = []
+
+    form_count = len(probe.get("forms") or [])
+    if form_count:
+        noun = "custom issue form" if form_count == 1 else "custom issue forms"
+        parts.append(f"{form_count} {noun}")
+
+    md_count = len(probe.get("markdown_templates") or [])
+    if md_count:
+        noun = "markdown template" if md_count == 1 else "markdown templates"
+        parts.append(f"{md_count} {noun}")
+
+    if probe.get("blank_issues_enabled") is False:
+        parts.append("blank issues disabled")
+
+    contact_links = probe.get("contact_links") or []
+    link_count = len(contact_links)
+    if link_count:
+        noun = "contact link" if link_count == 1 else "contact links"
+        parts.append(f"{link_count} {noun} configured")
+
+    if not parts:
+        return None
+
+    chooser_url = f"https://github.com/{owner}/{repo}/issues/new/choose"
+    summary = "; ".join(parts)
+    return (
+        f"Issue submissions are structured ({summary}). "
+        f"Prefer {chooser_url} over direct API filings."
+    )
+
+
+def _format_issue_submission_section(probe: Optional[dict]) -> Optional[str]:
+    """Render the fenced-body ``## Issue Submission`` section.
+
+    Contributor-supplied strings (form filenames, contact link names,
+    URLs, and ``about`` text) are rendered here rather than in
+    frontmatter. They arrive inside the ``_fence_content`` zone via the
+    existing ``parts`` pipeline, inheriting the per-line trust-marking
+    datamarking defense.
+    """
+    if probe is None:
+        return None
+
+    forms = probe.get("forms") or []
+    markdown_templates = probe.get("markdown_templates") or []
+    contact_links = probe.get("contact_links") or []
+    blank_issues_enabled = probe.get("blank_issues_enabled")
+
+    if (
+        not forms
+        and not markdown_templates
+        and not contact_links
+        and blank_issues_enabled is not False
+    ):
+        return None
+
+    lines: list[str] = ["## Issue Submission"]
+
+    if blank_issues_enabled is False:
+        lines.append("Blank issues are disabled; maintainers expect a template.")
+
+    if forms:
+        lines.append("")
+        lines.append("**Custom issue forms:**")
+        for name in forms:
+            lines.append(f"- {name}")
+
+    if markdown_templates:
+        lines.append("")
+        lines.append("**Markdown templates:**")
+        for name in markdown_templates:
+            lines.append(f"- {name}")
+
+    if contact_links:
+        lines.append("")
+        lines.append("**Contact links:**")
+        for link in contact_links:
+            name = link.get("name") or "(unnamed)"
+            url = link.get("url") or ""
+            about = link.get("about") or ""
+            bits = [f"- **{name}**"]
+            if url:
+                bits.append(f"— {url}")
+            if about:
+                bits.append(f"— {about}")
+            lines.append(" ".join(bits))
+
+    return "\n".join(lines)
 
 
 def _parse_citation_cff(cff: dict) -> tuple[Optional[str], str, list[str], Optional[int]]:
@@ -1122,10 +1452,14 @@ async def _action_repo(query: str) -> str:
     if topics:
         parts.append(f"Topics: {', '.join(topics)}")
 
-    # Fetch README (as JSON for path metadata) and CITATION.cff concurrently
-    readme_result, citation_cff = await asyncio.gather(
+    # Fetch README (as JSON for path metadata), CITATION.cff, and the
+    # issue-template steering hint concurrently. The hint is a cheap
+    # cached directory-existence check — the rich payload lives in the
+    # dedicated ``issue_templates`` action.
+    readme_result, citation_cff, template_hint = await asyncio.gather(
         _github_request("GET", f"/repos/{owner}/{repo}/readme"),
         _fetch_citation_cff(owner, repo, default_branch),
+        _maybe_issue_template_hint(owner, repo),
     )
 
     readme_text = None
@@ -1153,6 +1487,8 @@ async def _action_repo(query: str) -> str:
                 f"'{owner}/{repo}/{readme_path}' for full content, "
                 f"or {tool_name('web_fetch_direct')}('{readme_url}', section=...) for specific sections."
             )
+    _merge_hint(fm_entries, template_hint)
+
     fm_entries["shelf"] = await _track_repo_on_shelf(
         owner, repo, name, desc, result, citation_cff,
     )
@@ -1160,6 +1496,43 @@ async def _action_repo(query: str) -> str:
     fm = _build_frontmatter(fm_entries)
     body = "\n".join(parts)
     return fm + "\n\n" + _fence_content(body, title=name)
+
+
+# ---------------------------------------------------------------------------
+# Action: issue_templates
+# ---------------------------------------------------------------------------
+
+async def _action_issue_templates(query: str) -> str:
+    """Fetch issue submission configuration for a repository.
+
+    Returns the full advisory — custom forms, markdown templates,
+    contact-link routing, and ``blank_issues_enabled`` — so an agent
+    preparing to file an issue can pick the right entry point and
+    avoid raw API filings against repos that prefer structured
+    submissions.
+    """
+    parsed = _parse_owner_repo(query)
+    if isinstance(parsed, str):
+        return parsed
+    owner, repo = parsed
+
+    probe = await _probe_issue_templates(owner, repo)
+    if probe is None:
+        return (
+            f"No custom issue submission flow configured for {owner}/{repo}. "
+            f"The repo does not have a .github/ISSUE_TEMPLATE/ directory, "
+            f"so blank issues are allowed. File via the GitHub web UI "
+            f"or API at https://github.com/{owner}/{repo}/issues."
+        )
+
+    chooser_url = f"https://github.com/{owner}/{repo}/issues/new/choose"
+    fm_entries = _fm_base(chooser_url)
+    fm_entries["note"] = _build_issue_template_note(probe, owner, repo)
+    fm_entries["trust"] = _TRUST_ADVISORY
+
+    body = _format_issue_submission_section(probe) or ""
+    fm = _build_frontmatter(fm_entries)
+    return fm + "\n\n" + _fence_content(body, title=f"{owner}/{repo}")
 
 
 # ---------------------------------------------------------------------------
@@ -1309,7 +1682,10 @@ async def _action_issue(
         return parsed
     owner, repo, number = parsed
 
-    built = await _build_issue_markdown(owner, repo, number, limit, page)
+    built, template_hint = await asyncio.gather(
+        _build_issue_markdown(owner, repo, number, limit, page),
+        _maybe_issue_template_hint(owner, repo),
+    )
     if isinstance(built, str):
         return built
     title, raw_md, state, extra_fm = built
@@ -1322,6 +1698,7 @@ async def _action_issue(
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
         fm_entries["hint"] = f"Use page= to load more comments (page {page + 1})"
+    _merge_hint(fm_entries, template_hint)
     fm = _build_frontmatter(fm_entries)
     return fm + "\n\n" + _fence_content(content, title=title)
 
@@ -1471,7 +1848,10 @@ async def _action_pull_request(
         return parsed
     owner, repo, number = parsed
 
-    built = await _build_pr_markdown(owner, repo, number, limit, page)
+    built, template_hint = await asyncio.gather(
+        _build_pr_markdown(owner, repo, number, limit, page),
+        _maybe_issue_template_hint(owner, repo),
+    )
     if isinstance(built, str):
         return built
     title, raw_md, display_state, extra_fm = built
@@ -1484,6 +1864,7 @@ async def _action_pull_request(
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
         fm_entries["hint"] = f"Use page= to load more comments (page {page + 1})"
+    _merge_hint(fm_entries, template_hint)
     fm = _build_frontmatter(fm_entries)
     return fm + "\n\n" + _fence_content(content, title=title)
 
@@ -1564,7 +1945,7 @@ async def _action_file(
 
 _VALID_ACTIONS = (
     "search_issues", "search_code", "repo", "tree",
-    "issue", "pull_request", "file",
+    "issue", "pull_request", "file", "issue_templates",
 )
 
 
@@ -1578,7 +1959,8 @@ async def github(
             "pull_request: get PR details + review comments + diff stat by owner/repo#number. "
             "file: get file content from a repo (use ref= for branch/tag). "
             "repo: get repo metadata + README. "
-            "tree: get directory listing."
+            "tree: get directory listing. "
+            "issue_templates: list issue forms, markdown templates, and contact-link routing for a repository — use before filing a new issue."
         ),
     )],
     query: Annotated[str, Field(
@@ -1586,7 +1968,7 @@ async def github(
             "For search_issues/search_code: search query with optional GitHub qualifiers. "
             "For issue/pull_request: 'owner/repo#number' (e.g. 'facebook/react#1234'). "
             "For file/tree: 'owner/repo/path' (e.g. 'facebook/react/packages/react/src/React.js'). "
-            "For repo: 'owner/repo' (e.g. 'facebook/react')."
+            "For repo and issue_templates: 'owner/repo' (e.g. 'facebook/react')."
         ),
     )],
     ref: Annotated[Optional[str], Field(
@@ -1628,5 +2010,7 @@ async def github(
         return await _action_pull_request(query, limit, page)
     if action == "file":
         return await _action_file(query, ref)
+    if action == "issue_templates":
+        return await _action_issue_templates(query)
 
     return f"Error: Action '{action}' not implemented."

@@ -221,17 +221,20 @@ paper_id="204e3073870fae3d05bcbc2f6a8e263d9b72e776".""",
     "github": """Search and retrieve code, issues, and pull requests from GitHub.
 
 Use this for GitHub lookups: search issues/PRs across repositories, search code,
-get issue or PR details with comments, fetch file content from a specific ref, or
-get repo metadata with README. GitHub URLs are also handled automatically by
-{fetch_direct} — this tool is for structured queries by owner/repo/number.
+get issue or PR details with comments, fetch file content from a specific ref, get
+repo metadata with README, or inspect a repo's custom issue submission flow
+(forms, markdown templates, contact-link routing) before filing a new issue.
+GitHub URLs are also handled automatically by {fetch_direct} — this tool is for
+structured queries by owner/repo/number.
 
-Actions: search_issues, search_code, issue, pull_request, file, repo, tree.
+Actions: search_issues, search_code, issue, pull_request, file, repo, tree, issue_templates.
 
 Query formats vary by action:
 - search_issues/search_code: GitHub search query with qualifiers (repo:, is:, label:, language:, path:)
 - issue/pull_request: "owner/repo#number" (e.g. "pallets/flask#5618")
 - file/tree: "owner/repo/path" (e.g. "pallets/flask/src/flask/app.py") — use ref= for branch/tag
 - repo: "owner/repo" (e.g. "pallets/flask")
+- issue_templates: "owner/repo" (e.g. "pallets/flask") — call before filing an issue if the repo action's frontmatter hints at custom submission flow
 
 Authentication: Set GITHUB_TOKEN env var or create ~/.config/parkour/github_token
 for 5000 req/hr (vs 60/hr unauthenticated). No special scopes needed for public repos.""",
