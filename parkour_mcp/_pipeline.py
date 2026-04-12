@@ -1396,10 +1396,20 @@ def _dispatch_slicing(
     max_tokens: int,
     source_url: str,
     warning=None,
+    fallback: Optional[str] = None,
 ) -> str:
-    """Dispatch to search or slice retrieval after cache has been populated."""
+    """Dispatch to search or slice retrieval after cache has been populated.
+
+    If the cache is empty (e.g. a fast path returned an error string before
+    caching anything), ``fallback`` is returned verbatim when provided.  This
+    lets callers surface the original upstream error (e.g. ``"Error: File
+    not found"``) instead of a misleading ``"Page cache could not be
+    populated"`` message.
+    """
     cached = _page_cache.get(url)
     if not cached:
+        if fallback is not None:
+            return fallback
         return "Error: Page cache could not be populated for this URL."
     # Reddit markdown already embeds "# {title}" as slice 0's first line
     # (kept so slice ancestry remains informative) — skip re-adding it via

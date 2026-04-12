@@ -234,6 +234,7 @@ async def web_fetch_direct(
                         url, search, slices,
                         slices_list if slices is not None else [],
                         max_tokens, source_url, warning=fragment_warning,
+                        fallback=result,
                     )
                 if section_names:
                     # Section filtering on cached Reddit markdown
@@ -263,6 +264,7 @@ async def web_fetch_direct(
                         url, search, slices,
                         slices_list if slices is not None else [],
                         max_tokens, source_url, warning=fragment_warning,
+                        fallback=result,
                     )
                 if section_names:
                     cached = _page_cache.get(url)
@@ -290,7 +292,8 @@ async def web_fetch_direct(
         if result is not None:
             if want_slicing:
                 return _dispatch_slicing(url, search, slices, slices_list if slices is not None else [],
-                                         max_tokens, source_url, warning=fragment_warning)
+                                         max_tokens, source_url, warning=fragment_warning,
+                                         fallback=result)
             return result
     except Exception:
         pass  # Fall through to HTTP fetch
@@ -318,6 +321,7 @@ async def web_fetch_direct(
                         url, search, slices,
                         slices_list if slices is not None else [],
                         max_tokens, source_url, warning=fragment_warning,
+                        fallback=result,
                     )
                 if section_names:
                     cached = _page_cache.get(url)
@@ -416,7 +420,8 @@ async def web_fetch_direct(
     # If search/slices was requested, the cache is now populated — dispatch
     if want_slicing:
         return _dispatch_slicing(url, search, slices, slices_list if slices is not None else [],
-                                 max_tokens, source_url, warning=fragment_warning)
+                                 max_tokens, source_url, warning=fragment_warning,
+                                 fallback=output)
 
     return output
 

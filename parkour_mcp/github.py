@@ -12,7 +12,6 @@ the codebase.  Authentication is optional: unauthenticated requests get
 import asyncio
 import base64
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,7 +66,8 @@ def _get_github_token() -> str:
     global _github_token_cache
     if _github_token_cache is not None:
         return _github_token_cache
-    if key := os.environ.get("GITHUB_TOKEN"):
+    from .common import clean_env
+    if key := clean_env("GITHUB_TOKEN"):
         _github_token_cache = key
         return key
     if GITHUB_CONFIG_PATH.exists():

@@ -383,6 +383,7 @@ async def web_fetch_js(
                         url, search, slices,
                         slices_list if slices is not None else [],
                         max_tokens, source_url, warning=fragment_warning,
+                        fallback=result,
                     )
                 return result
     except Exception:
@@ -400,6 +401,7 @@ async def web_fetch_js(
                 return _dispatch_slicing(
                     url, search, slices, slices_list if slices is not None else [],
                     max_tokens, source_url, warning=fragment_warning,
+                    fallback=result,
                 )
             return result
     except Exception:
@@ -423,6 +425,7 @@ async def web_fetch_js(
                                     url, search, slices,
                                     slices_list if slices is not None else [],
                                     max_tokens, source_url, warning=fragment_warning,
+                                    fallback=result,
                                 )
                             return result
                 except Exception:
@@ -628,6 +631,7 @@ async def web_fetch_js(
         return _dispatch_slicing(
             url, search, slices, slices_list if slices is not None else [],
             max_tokens, source_url, warning=fragment_warning,
+            fallback=output,
         )
 
     if interactive_elements:

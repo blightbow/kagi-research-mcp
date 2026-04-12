@@ -9,7 +9,6 @@ negotiation (doi.org) and the DataCite REST API.  These are used for:
 
 import asyncio
 import logging
-import os
 import re
 from typing import Optional
 
@@ -382,7 +381,8 @@ async def fetch_crossref_metadata(
     """
     await _crossref_limiter.wait()
     params: dict[str, str] = {}
-    contact = os.environ.get("MCP_CONTACT_EMAIL", "").strip()
+    from .common import clean_env
+    contact = clean_env("MCP_CONTACT_EMAIL")
     if contact:
         params["mailto"] = contact
     try:

@@ -30,13 +30,32 @@ _FETCH_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
+def clean_env(name: str) -> str:
+    """Read an env var, treating empty / whitespace-only / unsubstituted
+    ``${...}`` templates as unset.
+
+    The Claude Desktop mcpb runtime passes the literal template string
+    (e.g. ``${user_config.GITHUB_TOKEN}``) through to the server's
+    environment when an optional ``user_config`` field is not filled in
+    by the user.  A naive ``os.environ.get`` treats that non-empty
+    string as a real value — producing malformed Authorization headers
+    and similarly broken configuration downstream.  This helper rejects
+    those sentinel shapes so callers can cleanly fall back to filesystem
+    config or unauthenticated mode.
+    """
+    val = os.environ.get(name, "").strip()
+    if not val or val.startswith("${"):
+        return ""
+    return val
+
+
 # Honest UA for structured API endpoints (MediaWiki, etc.) that expect
 # machine clients to identify themselves.  Follows RFC 9110 §10.1.5 and
 # Wikimedia User-Agent policy.
 #
 # Format: product/version (comment) http-library/version renderer/version
 # Optional mailto: enables CrossRef "polite pool" (10 req/s vs 5 req/s).
-_CONTACT_EMAIL = os.environ.get("MCP_CONTACT_EMAIL", "")
+_CONTACT_EMAIL = clean_env("MCP_CONTACT_EMAIL")
 _CONTACT_PART = f" mailto:{_CONTACT_EMAIL};" if _CONTACT_EMAIL else ""
 _API_USER_AGENT = (
     f"parkour-mcp/{_VERSION} "
