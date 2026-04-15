@@ -155,6 +155,55 @@ def test_html_to_markdown(tier: str, fixture_name: str, request: pytest.FixtureR
     _assert_under(elapsed_ms, baseline, f"html_to_markdown({tier})")
 
 
+# Lower bound multiplier for the md_bytes truncation guard.  Any output
+# smaller than this fraction of the captured baseline fails the test.  Set
+# wide enough to absorb normal htmd rendering drift between patch releases
+# (a few percent on well-formed HTML) and strict enough to catch the
+# catastrophic-loss failure mode — kreuzberg 3.1.0 dropped WHATWG output
+# from 6,338 KB to 425 KB (93% loss) while passing timing assertions.
+_MD_BYTES_LOWER_BOUND = 0.75
+
+
+@pytest.mark.parametrize("tier,fixture_name", [
+    ("small", "small_html"),
+    ("medium", "medium_html"),
+    ("pathological", "pathological_html"),
+])
+def test_html_to_markdown_output_size(
+    tier: str, fixture_name: str, request: pytest.FixtureRequest,
+) -> None:
+    """Guard against silent content truncation in ``html_to_markdown``.
+
+    Timing assertions are structurally blind to "faster but wrong" failures
+    where a converter regression drops most of the document: less content is
+    cheaper to process, so a catastrophic truncation can pass a pure timing
+    check without firing.  The kreuzberg 3.1.0 regression that motivated the
+    htmd-py port (commit ``da4f54a``) is the canonical example — it produced
+    425 KB of markdown on the 15 MB WHATWG spec vs htmd-py's 7,853 KB, a 93%
+    content loss that read as "successful conversion" to any caller checking
+    only elapsed time or exit status.
+
+    This test asserts that ``len(markdown)`` stays at or above
+    ``_MD_BYTES_LOWER_BOUND`` (0.75) times the captured baseline.  Upper
+    bound is intentionally not checked: it would flake on legitimate
+    rendering improvements in htmd (e.g. table alignment changes that add
+    whitespace) without catching any failure mode the timing assertions
+    wouldn't already catch.
+    """
+    html = request.getfixturevalue(fixture_name)
+    baseline_bytes = BASELINES["generic_http"][tier]["md_bytes"]
+    lower_bound = int(baseline_bytes * _MD_BYTES_LOWER_BOUND)
+
+    _, markdown = html_to_markdown(html)
+    actual_bytes = len(markdown)
+
+    assert actual_bytes >= lower_bound, (
+        f"html_to_markdown({tier}) produced {actual_bytes} bytes, "
+        f"below truncation guard {lower_bound} "
+        f"({_MD_BYTES_LOWER_BOUND}x baseline {baseline_bytes})"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase: MarkdownSplitter + section extraction + ancestry + tantivy
 # ---------------------------------------------------------------------------
