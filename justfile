@@ -5,6 +5,10 @@ pack:
     mkdir -p dist
     npx @anthropic-ai/mcpb pack . dist/parkour-mcp.mcpb
 
+# Locally test mcpb (assumes Claude Desktop+MacOS)
+uat: pack
+    open dist/parkour-mcp.mcpb
+
 # Run unit tests (mocked, excludes live)
 test *args:
     uv run pytest {{args}}

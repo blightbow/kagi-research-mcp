@@ -386,11 +386,20 @@ are delegated to the IETF handler.
 
 **IETF fast path (via fetch tools):**
 
-`rfc-editor.org` and `datatracker.ietf.org` URLs intercepted by
-`web_fetch_direct` produce the same frontmatter as the corresponding
-IETF tool actions.  RFC DOIs (`10.17487/RFC{N}`) resolved via `doi.org`
-are delegated to the IETF handler rather than generic DOI content
-negotiation, preserving relationship chains and subseries metadata.
+`datatracker.ietf.org` URLs and `rfc-editor.org` URLs in *metadata-bearing*
+shapes — bare path (`/rfc/rfcN`) and `.json` suffix — produce the same
+frontmatter as the corresponding IETF tool actions.
+
+`rfc-editor.org/rfc/rfcN.html`, `.txt`, `.xml`, and `.pdf` URLs
+deliberately fall through to the generic HTML pipeline so that `section=`
+and `search=` work over the rendered RFC body.  This was a one-way trap
+prior to v1.1.1 (see [#7](https://github.com/blightbow/parkour-mcp/issues/7))
+— the URL choice now encodes intent: bare/`.json` for metadata,
+`.html`/`.txt` for body.
+
+RFC DOIs (`10.17487/RFC{N}`) resolved via `doi.org` are delegated to the
+IETF handler rather than generic DOI content negotiation, preserving
+relationship chains and subseries metadata.
 
 ### Packages tool (deps.dev)
 
@@ -499,14 +508,16 @@ directory, merged into the existing `hint` list as needed.
 | `language` | Detected language from file extension |
 | `truncated`| When file exceeds `max_tokens` |
 
-**`search_issues` and `search_code` actions:**
+**`search_issues`, `search_repos`, and `search_code` actions:**
 
-| Field   | Description |
-|---------|-------------|
-| `source`| GitHub search URL |
-| `api`   | `GitHub` |
-| `total` | Total result count |
-| `hint`  | Pagination guidance (when more pages exist) |
+| Field           | Description |
+|-----------------|-------------|
+| `source`        | GitHub search URL |
+| `api`           | `GitHub` |
+| `total_results` | Total result count |
+| `showing`       | `"<n> (page <p>)"` — items returned in this response and the page number |
+| `note`          | "Results may be incomplete (search timed out)" when the GitHub search endpoint sets `incomplete_results: true` (conditional) |
+| `hint`          | Pagination guidance (when more pages exist). For `search_issues` against a single repo with a `label:` qualifier and zero results: the hint additionally lists the repo's actual labels via `/repos/{owner}/{repo}/labels` so the agent can retry with a corrected name. |
 
 **`tree` action:**
 
@@ -592,3 +603,81 @@ path additionally populates the 2Q page cache with presplit content:
 - **Issue**: comment tree with IDs, authors, role badges, timestamps
 - **PR**: review comments grouped by file + regular comments
 - **Repo/tree/gist**: redirect hint to the GitHub tool
+
+### MediaWiki tool
+
+The MediaWiki tool is the first dedicated tool to break the codebase-wide
+single-`query=` parameter convention.  It splits the primary input into
+`title=` (page identifier — title or URL) for the `page` and `references`
+actions, and `query=` (search terms) for the `search` action.  See
+[query-parameter-overload.md](query-parameter-overload.md) for the
+rationale.
+
+**`page` action:**
+
+Delegates to the fetch fast path, so the frontmatter shape is identical to
+that of `web_fetch_direct` against a MediaWiki URL — `source`, `site`,
+`generator`, `trust`, plus the standard truncation/section/search/slices
+fields when the relevant parameters are passed.  When the rendered page
+contains numbered footnotes and/or inline CITEREF anchors, an additional
+field is emitted to advertise the resolution path:
+
+| Field      | Description |
+|------------|-------------|
+| `see_also` | "Use MediaWiki action='references' to resolve: N numbered footnotes (footnotes=[1, 2, ...]); M inline author-date citations (citations=[\"#CITEREFFoo2007\", ...])" — only the applicable clauses are included.  Two sample CITEREF keys are drawn from the page when present. (conditional) |
+
+**`search` action:**
+
+| Field           | Description |
+|-----------------|-------------|
+| `api`           | `MediaWiki (<host>)` (e.g. `MediaWiki (en.wikipedia.org)`) |
+| `action`        | `search` |
+| `query`         | Search terms |
+| `total_results` | Total match count |
+| `hint`          | Pagination guidance via `offset=` (when more results exist) |
+
+**`references` action:**
+
+| Field              | Description |
+|--------------------|-------------|
+| `source`           | Canonical page URL |
+| `trust`            | Trust advisory for fenced content |
+| `footnotes_only`   | `True` when only `footnotes=` was supplied (conditional) |
+| `citations_only`   | `True` when only `citations=` was supplied (conditional) |
+| `footnotes_not_found` | Comma-joined list of unresolvable footnote indices (conditional) |
+| `citations_not_found` | Comma-joined list of unresolvable CITEREF keys (conditional) |
+| `citations_available_count` | Total CITEREFs on the page when one or more requested keys could not be resolved (conditional) |
+
+When both `footnotes=` and `citations=` are supplied in the same call, the
+fenced body contains both blocks and neither `_only` flag is set.  Note
+that the `references` action does **not** emit `api` or `action`
+frontmatter — the body is entirely the resolved-reference block, so the
+shape is closer to a content-bearing fetch than to an action dispatch.
+
+### Outbound request defenses
+
+In addition to SSRF blocking (above), every outbound HTTP fetch goes
+through `guarded_fetch()` (`common.py`), which layers three caps:
+
+1. **Content-Length gate** — reject up front if the advertised body
+   exceeds `max_bytes`.
+2. **Streaming size cap** — close the stream mid-transfer if cumulative
+   bytes exceed `max_bytes`.
+3. **Wall-clock deadline** — `asyncio.timeout(60.0)` on the entire
+   fetch (connect + reads).  Always applies, including when the size
+   caps are disabled.
+
+Defaults:
+
+| Caller                                                          | `max_bytes`     | Deadline |
+|------------------------------------------------------------------|-----------------|----------|
+| `web_fetch_direct`, `web_fetch_js`, fast paths emitting body     | 5 MiB           | 60 s     |
+| `web_fetch_sections`                                             | 50 MiB          | 60 s     |
+| GitHub blob fast path (`/blob/`, `raw.githubusercontent.com`)   | disabled (None) | 60 s     |
+
+`max_bytes=None` disables Layers 1 and 2 for callers whose output bound is
+the caller-supplied `max_tokens` (the GitHub blob fast path).  Layer 3
+still defends against slow-drip firehoses that per-phase timeouts can't
+catch.  `ResponseTooLarge` from Layers 1 or 2 surfaces as an error
+response to the caller; `httpx.ReadTimeout` from Layer 3 surfaces via the
+same channel as ordinary per-phase timeouts.

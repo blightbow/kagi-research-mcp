@@ -16,10 +16,11 @@ third-party APIs over HTTPS:
 | **GitHub** (api.github.com) | Search queries, repo/issue/PR identifiers | GitHub tool |
 | **IETF** (rfc-editor.org, datatracker.ietf.org) | RFC numbers, search queries | IETF tool |
 | **deps.dev** (deps.dev) | Package names, versions | Packages tool |
-| **Wikipedia/MediaWiki** (various) | Page titles, API queries | WebFetchExact (fast path) |
-| **Reddit** (old.reddit.com) | Thread URLs | WebFetchExact (fast path) |
-| **CrossRef** (api.crossref.org) | DOIs | DOI resolution |
-| **Arbitrary web URLs** | The URL you provide | WebFetchExact, WebFetchJS, WebFetchSections |
+| **Wikipedia/MediaWiki** (various) | Page titles, API queries | MediaWiki tool, WebFetchIncisive (fast path) |
+| **Reddit** (old.reddit.com) | Thread URLs | WebFetchIncisive (fast path) |
+| **Discourse** (forum hosts) | Topic URLs, search queries | Discourse tool, WebFetchIncisive (header-detected fast path) |
+| **CrossRef** (api.crossref.org) | DOIs | DOI resolution, retraction detection |
+| **Arbitrary web URLs** | The URL you provide | WebFetchIncisive, WebFetchJS, WebFetchSections |
 
 Each service's own privacy policy governs how they handle your requests.
 

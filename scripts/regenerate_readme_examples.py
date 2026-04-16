@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Regenerate README.md example outputs from live tool calls.
+"""Regenerate README.md and docs/guide.md example outputs from live tool calls.
 
-Calls each tool used in the README examples, captures the real output, and
+Calls each tool used in the worked examples, captures the real output, and
 writes labeled blocks to stdout.  Volatile fields (citation counts, category
 listings, slice content) are marked so you can compare structurally without
 being tripped up by data that changes daily.
+
+Note on naming: the internal Python function ``web_fetch_direct`` is what
+the LLM-facing tools ``web_fetch_incisive`` (desktop profile) and
+``WebFetchIncisive`` (code profile) dispatch to.  When pasting regenerated
+output into docs, replace the bare function name with the profile-correct
+LLM-facing name.
 
 Usage:
     uv run python3 scripts/regenerate_readme_examples.py
 
 Requirements:
     - S2_API_KEY or KAGI_API_KEY env vars as needed
-    - Network access to MDN, Wikipedia, arXiv, Semantic Scholar
+    - Network access to MDN, Wikipedia, arXiv, Semantic Scholar, GitHub,
+      RFC Editor
 """
 
 import asyncio
@@ -20,10 +27,19 @@ import logging
 import httpx
 import respx
 
+from parkour_mcp.common import init_tool_names
 from parkour_mcp.fetch_direct import web_fetch_direct, web_fetch_sections
 from parkour_mcp.mediawiki import mediawiki
 from parkour_mcp.semantic_scholar import semantic_scholar
 from parkour_mcp.arxiv import arxiv
+from parkour_mcp.ietf import ietf
+from parkour_mcp.github import github
+
+# Init tool-name lookup (hints reference sibling tools by their
+# profile-correct name).  "code" profile matches the PascalCase form
+# already present in existing docs.  Flip to "desktop" if regenerating
+# examples for the snake_case profile.
+init_tool_names("code")
 
 # Disable Reddit rate limiter for fixture-based generation
 import parkour_mcp.reddit as _reddit_mod
@@ -41,6 +57,14 @@ S2_ATTN_URL = (
 )
 S2_ATTN_ID = "204e3073870fae3d05bcbc2f6a8e263d9b72e776"
 HTTPBIN_JSON = "https://httpbin.org/json"
+
+# Long document used to demonstrate web_fetch_sections TOC pagination
+# (RFC 9110 — HTTP Semantics, ~311 sections, spans 4 slices)
+RFC_9110_HTML = "https://www.rfc-editor.org/rfc/rfc9110.html"
+
+# GitHub examples — repo with a CITATION.cff and an ISSUE_TEMPLATE directory
+# so issue_templates and the steering hint both have something to render
+GH_FLASK = "pallets/flask"
 
 # ── Reddit fixture (offline — no network) ───────────────────────────────────
 REDDIT_THREAD_URL = "https://www.reddit.com/r/Python/comments/1abc234/trusted_publishers_discussion/"
@@ -297,6 +321,111 @@ async def main() -> None:
             'README: Reddit BM25 search across comments',
             out,
         ))
+
+    # ── 18. web_fetch_sections — TOC pagination on RFC 9110 ──────────────
+    out = await web_fetch_sections(RFC_9110_HTML)
+    results.append((
+        'web_fetch_sections(RFC_9110_HTML)',
+        'README/guide: TOC pagination — slice=0 (default first window)',
+        out,
+    ))
+
+    # ── 19. web_fetch_sections — TOC pagination, slice=1 ────────────────
+    out = await web_fetch_sections(RFC_9110_HTML, slice=1)
+    results.append((
+        'web_fetch_sections(RFC_9110_HTML, slice=1)',
+        'guide: TOC pagination — second window',
+        out,
+    ))
+
+    # ── 20. web_fetch_sections — TOC pagination, slice=-1 ───────────────
+    out = await web_fetch_sections(RFC_9110_HTML, slice=-1)
+    results.append((
+        'web_fetch_sections(RFC_9110_HTML, slice=-1)',
+        'guide: TOC pagination — last window via negative index',
+        out,
+    ))
+
+    # ── 21. mediawiki — page action via dedicated tool ───────────────────
+    out = await mediawiki(action="page", title="42 (number)")
+    results.append((
+        'mediawiki(action="page", title="42 (number)")',
+        'guide: MediaWiki page fetch via dedicated tool',
+        out,
+    ))
+
+    # ── 22. mediawiki — native full-text search ──────────────────────────
+    out = await mediawiki(
+        action="search",
+        query="Hitchhiker's Guide to the Galaxy answer 42",
+        limit=4,
+    )
+    results.append((
+        'mediawiki(action="search", query="Hitchhiker\'s Guide to the Galaxy answer 42", limit=4)',
+        'guide: MediaWiki native full-text search  [VOLATILE: ranking may shift]',
+        out,
+    ))
+
+    # ── 23. mediawiki — references action with citations ────────────────
+    # Gödel's incompleteness theorems article uses author-date CITEREFs
+    # (the article's see_also hint lists CITEREFWillard2001 and
+    # CITEREFSmith2007 as sample keys).  A better CITEREF demo than
+    # 42 (number), which is numbered-footnotes only.
+    godel_url = "https://en.wikipedia.org/wiki/G%C3%B6del%27s_incompleteness_theorems"
+    out = await mediawiki(
+        action="references",
+        title=godel_url,
+        citations=["#CITEREFSmith2007"],
+    )
+    results.append((
+        'mediawiki(action="references", title="Gödel\'s incompleteness theorems", citations=["#CITEREFSmith2007"])',
+        'guide: MediaWiki inline CITEREF resolution  [VOLATILE: citation key may shift between revisions]',
+        out,
+    ))
+
+    # ── 24. ietf — RFC lookup via metadata endpoint ──────────────────────
+    out = await ietf(action="rfc", query="9110")
+    results.append((
+        'ietf(action="rfc", query="9110")',
+        'README/guide line ~553: IETF RFC metadata',
+        out,
+    ))
+
+    # ── 25. ietf — subseries resolution ──────────────────────────────────
+    out = await ietf(action="subseries", query="BCP14")
+    results.append((
+        'ietf(action="subseries", query="BCP14")',
+        'guide: IETF subseries resolution via BibXML',
+        out,
+    ))
+
+    # ── 26. github — search_repos action ─────────────────────────────────
+    out = await github(
+        action="search_repos",
+        query="topic:mcp-server stars:>50 language:python",
+        limit=5,
+    )
+    results.append((
+        'github(action="search_repos", query="topic:mcp-server stars:>50 language:python", limit=5)',
+        'guide: GitHub repository discovery  [VOLATILE: ranking changes]',
+        out,
+    ))
+
+    # ── 27. github — repo action with steering hint ──────────────────────
+    out = await github(action="repo", query=GH_FLASK)
+    results.append((
+        'github(action="repo", query=GH_FLASK)',
+        'guide: GitHub repo metadata + issue_templates steering hint',
+        out,
+    ))
+
+    # ── 28. github — issue_templates action ──────────────────────────────
+    out = await github(action="issue_templates", query=GH_FLASK)
+    results.append((
+        'github(action="issue_templates", query=GH_FLASK)',
+        'guide: GitHub issue template introspection',
+        out,
+    ))
 
     # ── Print all results ───────────────────────────────────────────────
     for label, note, output in results:

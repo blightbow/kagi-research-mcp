@@ -30,12 +30,39 @@ uv run pytest -m perf
 
 # Pack Claude Desktop Extension bundle
 just pack
+
+# Pack and open in Claude Desktop (macOS only — for local mcpb UAT)
+just uat
 ```
 
 The mocked suite (default `pytest` run) uses `respx` to stub HTTP calls and
 runs in under 30 seconds. Live tests are opt-in via the `-m live` marker and
 hit real endpoints — they require network access and some of them skip
 gracefully if optional credentials (`GITHUB_TOKEN`, etc.) aren't available.
+
+`just uat` packs the mcpb bundle into `dist/parkour-mcp.mcpb` and opens it
+with `open` so Claude Desktop picks it up for local install. Useful for
+manual UAT against a candidate build before tagging.
+
+## Tool icons
+
+Tool and server icons are generated from Noto fonts (SIL OFL 1.1) by
+`scripts/generate_icons.py`. SVGs land in `parkour_mcp/assets/icons/` and
+are loaded as `data:` URIs at server startup (the MCP `Icon` spec only
+permits `https://` or `data:` sources). The mapping from internal tool
+key to SVG filename and source glyph lives in `parkour_mcp/__init__.py`
+under `_ICON_FILES`.
+
+```bash
+# Regenerate all icons (downloads Noto fonts to a gitignored cache on first run)
+just icons
+```
+
+To add an icon for a new tool, append the tool key + glyph to
+`scripts/generate_icons.py`, run `just icons`, and add the matching entry
+to `_ICON_FILES` in `__init__.py`. Icons are shipped as package data
+(`[tool.setuptools.package-data]` in `pyproject.toml`) so they ride along
+in both the wheel and the mcpb bundle.
 
 ## Dead-code scanning
 
