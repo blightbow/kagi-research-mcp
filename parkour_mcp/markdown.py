@@ -96,7 +96,14 @@ def _clean_headings(soup: BeautifulSoup) -> None:
 _HEADING_MD_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _HEADING_MD_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
 _HEADING_MD_CODE = re.compile(r"`([^`]+)`")
-_HEADING_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+# ``[^\]]*`` (not ``+``) so empty-text permalink anchors such as
+# ``[](#introduction)`` — emitted by spec documents like the WHATWG HTML
+# Living Standard that render self-link ``<a>`` elements with no child
+# text — are stripped rather than left inline.  Otherwise the captured
+# section name includes the anchor syntax and section-by-name matching
+# in ``_filter_markdown_by_sections`` fails because callers type the
+# human-visible heading text, not the permalink.
+_HEADING_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _HEADING_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 
 

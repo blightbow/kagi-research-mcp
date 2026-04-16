@@ -224,6 +224,26 @@ class TestCleanHeadings:
         _, markdown = html_to_markdown(html)
         assert "https://example.com" in markdown
 
+    def test_strips_empty_text_permalink_anchor(self):
+        """Self-link permalink anchors with empty text must not leak into names.
+
+        Spec documents like the WHATWG HTML Living Standard append an
+        empty-text ``<a href="#slug" class="self-link"></a>`` to every
+        heading as a permalink widget.  htmd renders this as the markdown
+        link ``[](#slug)``.  Without stripping, section names become e.g.
+        ``"1 Introduction[](#introduction)"`` and callers who type the
+        human-visible heading (``"1 Introduction"``) fail to match.
+        """
+        html = (
+            '<html><body>'
+            '<h2>1 Introduction<a href="#introduction" class="self-link"></a></h2>'
+            '<p>Content.</p>'
+            '</body></html>'
+        )
+        _, markdown = html_to_markdown(html)
+        sections = _extract_sections_from_markdown(markdown)
+        assert sections[0]["name"] == "1 Introduction"
+
 
 # --- _build_section_list ---
 

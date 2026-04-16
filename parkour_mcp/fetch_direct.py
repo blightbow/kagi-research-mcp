@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .common import (
+    _MAX_RESPONSE_BYTES,
     _MAX_SECTIONS_RESPONSE_BYTES,
     ResponseTooLarge,
     check_url_ssrf,
@@ -258,8 +259,19 @@ async def web_fetch_direct(
         pass  # Fall through to HTTP fetch
 
     # --- HTTP fetch ---
+    # Targeted calls (section=/search=/slices=) bound their output to the
+    # requested slice regardless of body size, so they get the relaxed cap
+    # that web_fetch_sections uses.  Unconstrained calls emit (truncated)
+    # body content and keep the tighter cap that rejects Socrata-style
+    # firehoses.  The orient-then-extract flow (web_fetch_sections → this
+    # tool with section=) would otherwise break on documents large enough
+    # to need sectioning in the first place.
+    constrained = bool(section_names) or want_slicing
+    effective_max_bytes = (
+        _MAX_SECTIONS_RESPONSE_BYTES if constrained else _MAX_RESPONSE_BYTES
+    )
     try:
-        response = await guarded_fetch(url)
+        response = await guarded_fetch(url, max_bytes=effective_max_bytes)
         response.raise_for_status()
     except ResponseTooLarge as e:
         return f"Error: Response too large for {url} — {e}"

@@ -226,6 +226,43 @@ class TestWebFetchDirectErrors:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_constrained_call_gets_relaxed_cap(self):
+        """Targeted calls (section=/search=/slices=) admit large bodies.
+
+        The orient-then-extract flow (web_fetch_sections → web_fetch_direct
+        with section=) is the happy path for large documents, so it would
+        defeat the purpose to let section= trip the same cap that only
+        exists to protect the unconstrained output path from Socrata-style
+        firehoses.  The caller committed to bounded output the moment they
+        named a section; the input cap relaxes to match web_fetch_sections.
+        """
+        # Small real body, 10 MiB Content-Length — old uniform cap would
+        # reject at the gate.  With section=, the relaxed sections cap
+        # admits it and the section is extracted.
+        html = (
+            "<html><body>"
+            "<h1>Overview</h1><p>top-level intro</p>"
+            "<h2>Syntax</h2><p>syntax details</p>"
+            "</body></html>"
+        )
+        respx.get("https://example.com/bigspec").mock(
+            return_value=httpx.Response(
+                200, text=html,
+                headers={
+                    "content-type": "text/html",
+                    "content-length": str(10 * 1024 * 1024),
+                },
+            )
+        )
+
+        result = await web_fetch_direct(
+            "https://example.com/bigspec", section="Syntax",
+        )
+        assert "too large" not in result
+        assert "syntax details" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_unsupported_content_type(self):
         respx.get("https://example.com/file.bin").mock(
             return_value=httpx.Response(
