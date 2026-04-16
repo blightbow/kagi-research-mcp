@@ -642,6 +642,58 @@ class TestFilterMarkdownBySections:
         # Exact-name match does not set matched_fragment
         assert "matched_fragment" not in meta[0]
 
+    def test_section_matches_rfc_style_escaped_period(self):
+        """RFC Editor renders headings as ``17. Security Considerations``
+        (literal period after the number); htmd escapes the period to
+        ``17\\. Security Considerations`` so the line isn't read as an
+        ordered list when pulled out of heading context.  The strip
+        regex must still recognize the escaped form so callers can
+        reach the section by its descriptive title alone — this is the
+        UAT path that the IETF fast-path fix was meant to enable."""
+        md_text = (
+            "# RFC 9110\n\n"
+            "## 16\\. IANA Considerations\n\nIANA body.\n\n"
+            "## 17\\. Security Considerations\n\nSecurity body.\n"
+        )
+        sections = _extract_sections_from_markdown(md_text)
+        filtered, meta, unmatched = _filter_markdown_by_sections(
+            md_text, ["Security Considerations"], sections
+        )
+        assert unmatched == []
+        assert "Security body" in filtered
+        assert meta[0]["name"] == "17\\. Security Considerations"
+
+    def test_section_matches_rfc_style_literal_period(self):
+        """The literal-period form (``15. Foo``, no escape) appears in
+        plain-text RFC sources and in headings authored without
+        CommonMark escaping.  The strip regex must accept both."""
+        md_text = (
+            "# Doc\n\n"
+            "## 15. Plain Period\n\nPlain body.\n"
+        )
+        sections = _extract_sections_from_markdown(md_text)
+        filtered, _meta, unmatched = _filter_markdown_by_sections(
+            md_text, ["Plain Period"], sections
+        )
+        assert unmatched == []
+        assert "Plain body" in filtered
+
+    def test_section_matches_nested_escaped_period(self):
+        """Nested numbering with a trailing escaped period
+        (``8.4.1.1\\. Compress Coding``) — verify the regex still
+        reaches the descriptive title."""
+        md_text = (
+            "# Doc\n\n"
+            "## 8\\. Representation Data\n\nParent.\n\n"
+            "### 8.4.1.1\\. Compress Coding\n\nLeaf body.\n"
+        )
+        sections = _extract_sections_from_markdown(md_text)
+        filtered, _meta, unmatched = _filter_markdown_by_sections(
+            md_text, ["Compress Coding"], sections
+        )
+        assert unmatched == []
+        assert "Leaf body" in filtered
+
     def test_stripped_collision_first_wins(self):
         """When two sections number-strip to the same title,
         ``setdefault`` means the first registered section resolves the

@@ -492,13 +492,18 @@ def _slugify(text: str) -> str:
 
 
 # Matches a leading section-number token: one or more dot-separated
-# runs of digits followed by whitespace.  Examples: "13 ", "13.2 ",
-# "13.2.6 ".  Spec documents (WHATWG, ECMAScript, C++ draft, etc.)
-# render section numbers as prose inside the heading text via
-# ``<span class="secno">…</span>`` — humans refer to these sections by
-# name alone, so we register both ``"13.2.6 Tree construction"`` and
-# ``"Tree construction"`` (plus their slugs) in the section lookup.
-_SECTION_NUMBER_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*\s+")
+# runs of digits, optionally followed by a (possibly CommonMark-
+# escaped) trailing period, then whitespace.  Examples: "13 ",
+# "13.2 ", "13.2.6 ", "15. ", "15\\. ", "8.4.1.1. ".  Spec documents
+# (WHATWG, ECMAScript, C++ draft, etc.) render section numbers as
+# prose inside the heading text via ``<span class="secno">…</span>``;
+# RFC Editor renders them as literal "15. " in the heading source,
+# which htmd escapes to "15\\. " on conversion to keep the line from
+# being read as an ordered list when pulled out of heading context.
+# Either form should reduce to the descriptive title alone, so we
+# register both ``"13.2.6 Tree construction"`` and ``"Tree
+# construction"`` (plus their slugs) in the section lookup.
+_SECTION_NUMBER_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*(?:\\?\.)?\s+")
 
 
 def _strip_section_number(name: str) -> str:
