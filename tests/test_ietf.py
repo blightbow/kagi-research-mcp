@@ -113,13 +113,28 @@ class TestDetectIetfUrl:
         result = _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc9110.json")
         assert result == {"type": "rfc", "number": 9110}
 
-    def test_rfc_editor_html(self):
-        result = _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc768.html")
-        assert result == {"type": "rfc", "number": 768}
+    def test_rfc_editor_html_falls_through(self):
+        # Body-text suffixes are intentionally NOT intercepted so the generic
+        # HTTP+markdown pipeline handles section= and search= against the
+        # rendered RFC text.  See parkour-mcp#7.
+        assert _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc768.html") is None
+
+    def test_rfc_editor_txt_falls_through(self):
+        assert _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc9110.txt") is None
+
+    def test_rfc_editor_xml_falls_through(self):
+        assert _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc9110.xml") is None
+
+    def test_rfc_editor_pdf_falls_through(self):
+        assert _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc9110.pdf") is None
 
     def test_rfc_editor_bare(self):
         result = _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc1")
         assert result == {"type": "rfc", "number": 1}
+
+    def test_rfc_editor_trailing_slash(self):
+        result = _detect_ietf_url("https://www.rfc-editor.org/rfc/rfc9110/")
+        assert result == {"type": "rfc", "number": 9110}
 
     def test_datatracker_rfc(self):
         result = _detect_ietf_url("https://datatracker.ietf.org/doc/rfc9110/")

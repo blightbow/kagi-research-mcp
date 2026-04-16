@@ -18,10 +18,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # URL detection
 # ---------------------------------------------------------------------------
-# Matches rfc-editor.org/rfc/rfc{N} with any suffix (.json, .html, .txt, .xml)
-# or bare path.  Does NOT match /info/ pages (used for subseries resolution).
+# Matches rfc-editor.org/rfc/rfc{N} only when the URL targets the canonical
+# metadata endpoint: bare path (with optional trailing slash) or `.json` suffix.
+# Body-text suffixes (.html/.txt/.xml/.pdf) intentionally fall through to the
+# generic HTTP+markdown pipeline so callers can use section= and search=
+# against the rendered text.  Does NOT match /info/ pages (used for subseries
+# resolution).
 _RFC_EDITOR_RE = re.compile(
-    r'https?://www\.rfc-editor\.org/rfc/rfc(\d+)(?:\.\w+)?',
+    r'https?://www\.rfc-editor\.org/rfc/rfc(\d+)(?:\.json)?(?=[/?#]|$)',
     re.IGNORECASE,
 )
 
@@ -464,7 +468,7 @@ async def _fetch_rfc_paper(number: int) -> str:
         "shelf": shelf_result.status_line,
         "full_text": (
             f"Use {tool_name('web_fetch_direct')} with https://www.rfc-editor.org/rfc/rfc{number}.html "
-            "for full RFC text with search/slices"
+            "for the rendered RFC body (supports section= and search=)"
         ),
         "see_also": (
             f"Use {tool_name('semantic_scholar')} with DOI:{rfc_doi} for citation data"

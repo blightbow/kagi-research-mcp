@@ -158,11 +158,20 @@ async def web_fetch_direct(
     # --- IETF fast path (before DOI — catches rfc-editor.org and datatracker URLs) ---
     try:
         from .ietf import _detect_ietf_url
-        if _detect_ietf_url(url):
+        ietf_match = _detect_ietf_url(url)
+        if ietf_match:
             if want_slicing:
+                if ietf_match.get("type") == "rfc":
+                    n = ietf_match["number"]
+                    return (
+                        "Error: search/slices not supported for IETF metadata URLs. "
+                        f"Use {tool_name('web_fetch_direct')} with "
+                        f"https://www.rfc-editor.org/rfc/rfc{n}.html "
+                        "for the rendered body (supports search/slices)."
+                    )
                 return (
                     "Error: search/slices not supported for IETF metadata URLs. "
-                    f"Use {tool_name('web_fetch_direct')} with the RFC's .html URL for full text with search/slices."
+                    "For draft body text, fetch the I-D HTML render from www.ietf.org/archive/id/."
                 )
             result = await _ietf_fast_path(url)
             if result is not None:
@@ -655,8 +664,10 @@ async def web_fetch_sections(url: str) -> str:
         fm = _build_frontmatter({
             "source": original_url,
             "api": "IETF (RFC Editor)",
-            "note": f"Use {tool_name('web_fetch_direct')} with https://www.rfc-editor.org/rfc/rfc{n}.html "
-                    "for full RFC text with section-aware browsing.",
+            "note": f"Section listing is not available from the RFC Editor metadata endpoint. "
+                    f"Use {tool_name('web_fetch_sections')} with "
+                    f"https://www.rfc-editor.org/rfc/rfc{n}.html "
+                    "to browse the rendered body by section.",
         })
         return fm
 

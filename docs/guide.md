@@ -496,7 +496,7 @@ api: IETF (RFC Editor)
 status: INTERNET STANDARD
 doi: 10.17487/RFC9110
 shelf: 1 tracked (0 confirmed) — use ResearchShelf to review
-full_text: Use WebFetchExact with https://www.rfc-editor.org/rfc/rfc9110.html for full RFC text with search/slices
+full_text: Use WebFetchExact with https://www.rfc-editor.org/rfc/rfc9110.html for the rendered RFC body (supports section= and search=)
 see_also: Use SemanticScholar with DOI:10.17487/RFC9110 for citation data
 subseries: STD 97
 obsoletes:
