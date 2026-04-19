@@ -188,7 +188,12 @@ class _CacheEntry:
 
     _SPLITTER = MarkdownSplitter((1600, 2000))
 
-    # Shared tantivy schema — one text field for content, one for slice index
+    # Shared tantivy schema.  ``body`` and ``heading`` are both searchable
+    # text fields; ``heading`` carries the slice's section-ancestry
+    # breadcrumb and is boosted at query time so navigation-style queries
+    # (e.g. "troubleshooting", "installation") rank section-relevant
+    # slices above tangential prose mentions.  ``heading`` is not stored —
+    # ancestry is kept separately on the cache entry for display.
     _SCHEMA = None
 
     @classmethod
@@ -196,6 +201,7 @@ class _CacheEntry:
         if cls._SCHEMA is None:
             builder = tantivy.SchemaBuilder()
             builder.add_text_field("body", stored=True)
+            builder.add_text_field("heading", stored=False)
             builder.add_unsigned_field("idx", stored=True)
             cls._SCHEMA = builder.build()
         return cls._SCHEMA
@@ -258,7 +264,11 @@ class _CacheEntry:
         self._tantivy_index = tantivy.Index(schema)
         writer = self._tantivy_index.writer()
         for i, text in enumerate(self._slices):
-            writer.add_document(tantivy.Document(body=text, idx=i))
+            writer.add_document(tantivy.Document(
+                body=text,
+                heading=self._slice_ancestry[i],
+                idx=i,
+            ))
         writer.commit()
         self._tantivy_index.reload()
         self._built = True
@@ -320,11 +330,21 @@ class _CacheEntry:
         return md_bytes + slices_bytes + ancestry_bytes + tantivy_est
 
     def search(self, query_str: str, limit: int = 50) -> list[int]:
-        """BM25 search over cached slices. Returns matching slice indices ranked by relevance."""
+        """BM25 search over cached slices. Returns matching slice indices ranked by relevance.
+
+        Queries run against both ``body`` (slice text) and ``heading``
+        (section-ancestry breadcrumb); heading matches are boosted 2×
+        so navigation-style queries surface section-relevant slices
+        above tangential prose mentions.
+        """
         self._ensure_built()
         if not self._tantivy_index or not self._slices:
             return []
-        query, errors = self._tantivy_index.parse_query_lenient(query_str, ["body"])
+        query, errors = self._tantivy_index.parse_query_lenient(
+            query_str,
+            default_field_names=["body", "heading"],
+            field_boosts={"heading": 2.0},
+        )
         if errors:
             logger.warning("tantivy query parse errors for %r: %s", query_str, errors)
         searcher = self._tantivy_index.searcher()

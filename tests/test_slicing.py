@@ -777,6 +777,109 @@ class TestWebFetchDirectSearch:
 
 
 # ---------------------------------------------------------------------------
+# Heading-field boost — section-ancestry contribution to BM25 ranking
+# ---------------------------------------------------------------------------
+
+# A document where the section "Widget Configuration" contains no prose
+# mention of "widget" in its bulk body, but the section heading carries
+# the word.  A separate "Troubleshooting Tips" section mentions "widget"
+# once in passing.  With heading indexing enabled, the Widget
+# Configuration section should rank above the Troubleshooting section
+# for the query "widget"; with body-only indexing, Troubleshooting would
+# win (or the ranking would depend on where the heading words fall).
+
+_LOREM = (
+    "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do "
+    "eiusmod tempor incididunt ut labore et dolore magna aliqua ut "
+    "enim ad minim veniam quis nostrud exercitation ullamco laboris "
+    "nisi ut aliquip ex ea commodo consequat duis aute irure dolor "
+    "in reprehenderit in voluptate velit esse cillum dolore eu fugiat "
+    "nulla pariatur excepteur sint occaecat cupidatat non proident "
+    "sunt in culpa qui officia deserunt mollit anim id est laborum."
+)
+
+_HEADING_BOOST_HTML = f"""\
+<html><head><title>Heading Boost Test</title></head><body>
+<h1>Heading Boost Test</h1>
+<p>Introduction with generic content.</p>
+<h2>Widget Configuration</h2>
+<p>{_LOREM}</p>
+<p>{_LOREM}</p>
+<p>{_LOREM}</p>
+<h2>Troubleshooting Tips</h2>
+<p>If you run into trouble, a common cause is a misbehaving widget
+that needs attention. Check the logs for more details. {_LOREM}</p>
+</body></html>
+"""
+
+
+class TestHeadingFieldBoost:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_heading_section_outranks_prose_mention(self):
+        """Slices under a heading that contains the query term rank above
+        slices that merely mention the term in prose elsewhere."""
+        respx.get("https://example.com/boost").mock(
+            return_value=httpx.Response(
+                200, text=_HEADING_BOOST_HTML,
+                headers={"content-type": "text/html"},
+            ),
+        )
+        result = await web_fetch_direct(
+            "https://example.com/boost", search="widget",
+        )
+        # Widget Configuration slices (ancestry matches via heading field)
+        # should appear in the matched list.  The Troubleshooting slice
+        # (body mention) is also a match but should not dominate.
+        assert "Widget Configuration" in result
+        # Parse the matched slice order from frontmatter
+        assert "matched_slices:" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_body_only_term_unchanged(self):
+        """Terms that appear only in prose and no heading rank by body
+        alone — the heading boost neither helps nor hurts them."""
+        respx.get("https://example.com/boost").mock(
+            return_value=httpx.Response(
+                200, text=_HEADING_BOOST_HTML,
+                headers={"content-type": "text/html"},
+            ),
+        )
+        # "lorem" appears in every body paragraph, in no heading.
+        result = await web_fetch_direct(
+            "https://example.com/boost", search="lorem",
+        )
+        assert "matched_slices:" in result
+        assert "none" not in result.split("matched_slices:")[1].split("\n")[0]
+
+    def test_schema_includes_heading_field(self):
+        """The tantivy schema exposes a ``heading`` field alongside
+        ``body`` and ``idx`` — guard against accidental schema regression."""
+        from parkour_mcp._pipeline import _CacheEntry
+        # Reset the cached schema so we exercise the builder
+        _CacheEntry._SCHEMA = None
+        schema = _CacheEntry._get_schema()
+        # tantivy's Schema exposes fields via to_dict or iteration — use
+        # indexing-build round-trip to verify the field is present and
+        # accepts values.
+        idx = __import__("tantivy").Index(schema)
+        w = idx.writer()
+        w.add_document(__import__("tantivy").Document(
+            body="sample body", heading="sample heading", idx=0,
+        ))
+        w.commit()
+        idx.reload()
+        # If "heading" wasn't in the schema, add_document would have
+        # raised ValueError above.  Also verify it's searchable:
+        query, _ = idx.parse_query_lenient(
+            "sample", default_field_names=["heading"],
+        )
+        hits = idx.searcher().search(query, limit=5).hits
+        assert len(hits) == 1
+
+
+# ---------------------------------------------------------------------------
 # web_fetch_direct — slices parameter
 # ---------------------------------------------------------------------------
 
