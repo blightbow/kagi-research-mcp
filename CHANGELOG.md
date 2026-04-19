@@ -7,6 +7,118 @@ Versioning: https://semver.org/spec/v2.0.0.html
 
 <!-- towncrier release notes start -->
 
+## [1.2.0] 2026-04-19
+
+### Added
+
+- Reddit comment-permalink URLs now return the full thread with the
+  linked comment pre-selected, instead of a silent 1-of-N truncated
+  response. Previously, fetching a URL like
+  `/r/SUB/comments/POSTID/slug/COMMENTID/` returned only a
+  context-scoped subtree (the linked comment and its replies) while
+  silently dropping the rest of the thread. Empirical test against a
+  62-comment post: the permalink returned 1 comment where the post URL
+  returned all 62. The fast path now strips the permalink to its post
+  URL and injects `section=<comment_id>` so the output lands on the
+  linked comment, with a frontmatter `note` explaining the rewrite.
+  Caller-supplied `section=` or `search=` parameters win silently and
+  disable the rewrite. A subsequent fetch of the bare post URL reuses
+  the cache populated by the earlier permalink call, so search and
+  slice follow-ups are near-instant.
+- Section names matching the search term now carry stronger weight
+  than in-prose mentions. A search for `troubleshooting` surfaces
+  slices from the troubleshooting section even when that exact word
+  does not appear inside the body prose; navigation-style queries
+  (`configuration`, `methodology`) behave more predictably. Internally
+  this adds a boosted `heading` field to the tantivy index populated
+  from the section ancestry breadcrumb, with a 2.0x boost over
+  body-only matches. Tuned against a 29-slice document with known
+  structure; ranking order is stable across boost magnitudes so the
+  behavior is not fragile.
+
+### Changed
+
+- Frontmatter fields that aggregate contributions from multiple
+  subsystems (`hint`, `warning`, `note`, `see_also`, `alert`) now
+  compose correctly when two subsystems deposit on the same key in a
+  single request. Previously a second contributor would silently
+  clobber the first, so callers who expected to see both a rate-limit
+  advisory and a fragment-resolution warning saw only the last one
+  written. Internally this is enforced via a `FMEntries(UserDict)`
+  subclass that raises `TypeError` on direct subscript assignment to
+  protected keys, routing all mutations through the sanctioned
+  `.append()` path. Single-item fields still render as scalars;
+  two-or-more items render as YAML sequences per the frontmatter
+  standard.
+
+### Fixed
+
+- Natural-language search queries with stray punctuation no longer
+  crash the request. A query like `search="System Prompt: Git status"`
+  previously failed with the cryptic error `Field does not exist:
+  'Prompt'` because tantivy's strict parser interpreted the colon as a
+  field qualifier. The lenient parser now degrades unparseable tokens
+  to match-nothing while valid terms still rank; a new `warning`
+  frontmatter entry surfaces the parse error so callers can see when
+  their query was silently rewritten. Side benefit: the full tantivy
+  query grammar (phrases, booleans, slop, fuzzy) is now usable from
+  `search=` without risking crashes on punctuation.
+- Search callers now see a `warning` field in the response frontmatter
+  when their query was silently modified by the lenient parser. A
+  query like `search="System Prompt: Git status NEW"` previously
+  dropped the word `Prompt` (the lenient parser reads `Prompt:` as a
+  field qualifier) and returned a full-looking result with the original
+  query echoed back, giving the caller no signal that the query had
+  been rewritten. The raw tantivy error is now surfaced on-wire
+  alongside a concrete fix suggestion (wrap multi-word terms in double
+  quotes, or use the documented search operators). The `warning` field
+  composes cleanly with existing contributors such as fragment-
+  resolution advisories and parameter-conflict notices, rendering as a
+  YAML list when multiple warnings fire.
+- The Reddit fast path works again. Between 2026-03-27 and 2026-04-18,
+  Reddit tightened JA3/JA4 TLS-fingerprint-based bot detection, and
+  the httpx-backed fetch started returning 403 blocked-page HTML
+  instead of the expected JSON. The fast path now uses `curl_cffi` with
+  Safari 18.4 impersonation; empirical verification confirms Safari
+  and Firefox profiles pass reliably while Chrome profiles still get
+  403 (Reddit's detector is Chrome-targeted).
+
+### Security
+
+- Three static-analysis rules now enforce security- and standards-
+  sensitive invariants at CI time, complementing the existing runtime
+  guards:
+
+  - **SSRF precedence**: any outbound HTTP fetch (`guarded_fetch` or
+    raw `httpx.get`) must be preceded by `check_url_ssrf` in the same
+    function.
+  - **Content fence discipline**: only `_fence_content` in
+    `markdown.py` may emit trust-boundary fence markers; hand-rolled
+    markers elsewhere are flagged.
+  - **Frontmatter key discipline**: `fm_entries` variables must be
+    constructed via `FMEntries(...)`, never via plain `dict` literals,
+    so the runtime guard cannot be bypassed at construction.
+
+  These rules run as part of the pytest suite (~1.5s overhead) and
+  surface violations with file, line, and rule id. Agentic coding
+  makes quiet regressions on these invariants plausible; static
+  analysis closes the gap that runtime guards and human review miss.
+
+### Documentation
+
+- Tool descriptions are now LLM-first: they focus on when to pick each
+  tool and how to call it accurately rather than documenting
+  implementation details callers do not need. Specific corrections:
+  phantom tool references removed (`research_shelf` no longer lists a
+  nonexistent "DOI tool"); the full tantivy search grammar is exposed
+  on every tool that accepts `search=`; cross-references between
+  sibling tools survive deferred tool loading in Claude Code and Claude
+  Desktop where one tool may be surfaced without the other. The
+  `summarize` tool's guidance now frames it as the right choice only
+  when the built-in `WebFetch` summarizer cannot reach the page
+  (captcha-gated, PDFs, YouTube, audio).
+
+
 ## [1.1.2] 2026-04-16
 
 This is v1.1.1 in a trenchcoat. A naive workflow accident burned
