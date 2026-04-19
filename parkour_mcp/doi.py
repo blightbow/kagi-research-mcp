@@ -16,6 +16,7 @@ import httpx
 
 from .common import _API_USER_AGENT, RateLimiter, s2_enabled, tool_name
 from .markdown import (
+    FMEntries,
     _build_frontmatter,
     _fence_content,
     _format_retraction_banner,
@@ -773,7 +774,7 @@ async def _fetch_doi_paper(doi: str) -> str:
         retraction=retraction,
     ))
 
-    fm_entries: dict = {
+    fm_entries = FMEntries({
         "title": title,
         "source": f"https://doi.org/{doi}",
         "api": "DOI",
@@ -786,7 +787,7 @@ async def _fetch_doi_paper(doi: str) -> str:
             if s2_enabled() else None
         ),
         "shelf": shelf_result.status_line,
-    }
+    })
     fm = _build_frontmatter(fm_entries)
 
     fenced = _fence_content(body, title=None)  # title already in body as H1

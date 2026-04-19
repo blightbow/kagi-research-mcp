@@ -1,6 +1,8 @@
 """HTML-to-markdown conversion and section extraction helpers."""
 
 import re
+from collections import UserDict
+from collections.abc import Mapping
 from typing import Optional
 from urllib.parse import unquote
 
@@ -874,23 +876,118 @@ def _filter_markdown_by_sections(
     return result, matched_meta, unmatched
 
 
-def _append_frontmatter_entry(fm_entries: dict, key: str, value) -> None:
+class FMEntries(UserDict):
+    """Frontmatter-entries dict that routes multi-contributor keys
+    through ``append`` so concurrent advisories compose instead of
+    clobbering.
+
+    Multi-contributor keys — ``hint``, ``warning``, ``note``,
+    ``see_also``, ``alert`` — can receive contributions from multiple
+    subsystems (fragment resolution, search-parser warnings,
+    pagination hints, etc.) in a single request.  Direct ``d[key] =
+    value`` silently drops any prior contributor; use ``d.append(key,
+    value)`` or the free helper ``_append_frontmatter_entry``.
+
+    Subclassing ``UserDict`` (not ``dict``) is deliberate.  A plain
+    ``dict`` subclass can't enforce a ``__setitem__`` override across
+    every mutation path: CPython's ``PyDict_Merge`` bypasses Python-
+    level ``__setitem__`` for ``dict.update`` / ``|=``, so a naive
+    override would only catch subscript assignment.  ``UserDict``'s
+    pure-Python methods all funnel through ``__setitem__``, so one
+    override guards the complete surface.
+    """
+
+    PROTECTED = frozenset({"hint", "warning", "note", "see_also", "alert"})
+
+    # Liskov-violating narrowing is deliberate: the parent contract allows
+    # any write, we restrict protected keys to .append().  ty correctly
+    # flags this; we suppress because restriction is the entire purpose
+    # of the subclass.
+    def __setitem__(self, key, value) -> None:  # ty: ignore[invalid-method-override]
+        if key in self.PROTECTED:
+            raise TypeError(
+                f"Direct assignment to FMEntries[{key!r}] is forbidden "
+                f"because {key!r} can receive contributions from multiple "
+                f"subsystems; a direct write would silently drop prior "
+                f"advisories. Use `.append({key!r}, value)` or "
+                f"`_append_frontmatter_entry(fm, {key!r}, value)`."
+            )
+        super().__setitem__(key, value)
+
+    def append(self, key: str, value) -> None:
+        """Append a value to *key*, promoting scalar→list on second write.
+
+        ``None`` and falsy values are ignored so conditional callers can
+        hand in values without a preflight check.  First write lands as
+        a scalar; subsequent writes promote the field to a list.
+        """
+        if not value:
+            return
+        existing = self.data.get(key)
+        if existing is None:
+            self.data[key] = value
+        elif isinstance(existing, list):
+            self.data[key] = [*existing, value]
+        else:
+            self.data[key] = [existing, value]
+
+    def update(self, other=None, /, **kwargs) -> None:
+        """Merge ``other`` into self, routing protected keys through ``append``.
+
+        Default ``UserDict.update`` calls ``__setitem__`` per key, so a
+        protected key in *other* would raise.  That would be correct
+        but unusable — callers routinely ``.update`` from helper return
+        values (e.g. ``extra_fm`` dicts) that may legitimately contain
+        a ``hint`` or ``warning``.  Route protected keys through
+        ``.append`` so those contributions compose rather than
+        clobbering, and let unprotected keys flow through the normal
+        ``__setitem__`` path.
+        """
+        def _merge(iterable):
+            for k, v in iterable:
+                if k in self.PROTECTED:
+                    self.append(k, v)
+                else:
+                    self[k] = v
+
+        if other is not None:
+            if hasattr(other, "items"):
+                _merge(other.items())
+            else:
+                _merge(other)
+        _merge(kwargs.items())
+
+    def __ior__(self, other):
+        """Route ``|=`` through ``update`` so protected keys compose.
+
+        ``UserDict.__ior__`` in stdlib delegates to ``self.data |=
+        other``, which bypasses our ``__setitem__`` guard and our
+        ``update`` override.  Override here to force the in-place merge
+        through the sanctioned path.
+        """
+        self.update(other)
+        return self
+
+
+def _append_frontmatter_entry(fm_entries, key: str, value) -> None:
     """Append a value to an ``fm_entries`` field, promoting scalar→list as needed.
 
-    Empty (``None`` / falsy) values are ignored.  The first value lands as
-    a scalar; each subsequent call promotes the field to a YAML sequence.
-    ``_build_frontmatter`` renders single-item lists as scalars and
-    multi-item lists as YAML sequences (see frontmatter-standard.md
-    "List Values"), so callers can append without worrying about the
-    resulting shape.
+    Empty (``None`` / falsy) values are ignored.  The first value lands
+    as a scalar; each subsequent call promotes the field to a YAML
+    sequence.  ``_build_frontmatter`` renders single-item lists as
+    scalars and multi-item lists as YAML sequences (see
+    frontmatter-standard.md "List Values"), so callers can append
+    without worrying about the resulting shape.
 
-    Use this instead of inline ``fm_entries[key] = ...`` whenever more
-    than one subsystem can contribute to the same key — for example the
-    ``warning`` field, which may receive entries from URL-fragment
-    resolution, parameter conflicts, and the search parser.  Consumers
-    that overwrite would silently drop earlier advisories.
+    Use this (or ``FMEntries.append``) instead of inline
+    ``fm_entries[key] = ...`` whenever more than one subsystem can
+    contribute to the same key.  Works against both ``FMEntries`` and
+    plain ``dict`` so it stays usable in tests and transitional code.
     """
     if not value:
+        return
+    if isinstance(fm_entries, FMEntries):
+        fm_entries.append(key, value)
         return
     existing = fm_entries.get(key)
     if existing is None:
@@ -902,7 +999,7 @@ def _append_frontmatter_entry(fm_entries: dict, key: str, value) -> None:
 
 
 def _build_frontmatter(
-    entries: dict,
+    entries: Mapping,
     sections_not_found: Optional[list[str]] = None,
 ) -> str:
     """Build YAML frontmatter block.

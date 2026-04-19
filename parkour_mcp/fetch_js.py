@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 
 from .common import _FETCH_HEADERS, check_url_ssrf
 from .markdown import (
+    FMEntries,
     html_to_markdown, _build_frontmatter, _apply_hard_truncation,
     _fence_content, _TRUST_ADVISORY,
 )
@@ -352,7 +353,7 @@ async def web_fetch_js(
     try:
         result = await _mediawiki_fast_path(
             url, section_names, max_tokens,
-            extra_entries={"source": source_url, "warning": fragment_warning},
+            extra_entries=FMEntries({"source": source_url, "warning": fragment_warning}),
             cache_url=url,
         )
         if result is not None:
@@ -573,13 +574,13 @@ async def web_fetch_js(
         title = _title
 
     # Section handling, truncation, and frontmatter via shared pipeline
-    frontmatter_entries = {
+    frontmatter_entries = FMEntries({
         "source": source_url,
         "warning": fragment_warning,
         "browser": browser_name,
         "detected_app": detected_app or None,
         "iframe_source": iframe_source or None,
-    }
+    })
     output = _process_markdown_sections(
         markdown_content, section_names, max_tokens, frontmatter_entries,
         title=title, cache_url=url, renderer="js",

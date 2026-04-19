@@ -11,7 +11,7 @@ from pydantic import Field
 import httpx
 
 from .common import _API_USER_AGENT, RateLimiter, tool_name
-from .markdown import _build_frontmatter
+from .markdown import FMEntries, _build_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +428,11 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
     relations = (crossref_meta or {}).get("relations") or {}
 
     html_url = f"https://arxiv.org/html/{clean_id}"
-    fm_entries = {
+    pdf_note = (
+        "Original URL was a PDF link. Structured metadata returned instead."
+        + (f" For readable full text, use {html_url}" if html_available else "")
+    ) if _pdf_url else None
+    fm_entries = FMEntries({
         "title": paper.get("title", "Untitled"),
         "source": f"https://arxiv.org/abs/{clean_id}",
         "api": "arXiv",
@@ -442,12 +446,7 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
             else "HTML full text is not available for this paper; only abstract and metadata are included"
         ),
         "see_also": _arxiv_see_also(clean_id, html_available, citation_text),
-    }
-    if _pdf_url:
-        fm_entries["note"] = (
-            "Original URL was a PDF link. Structured metadata returned instead."
-            + (f" For readable full text, use {html_url}" if html_available else "")
-        )
+    })
 
     # Passive shelf tracking (fire-and-forget)
     # Prefer publisher DOI as primary when available; arXiv DOI becomes alt
@@ -476,13 +475,12 @@ async def _fetch_arxiv_paper(arxiv_id: str, *, _pdf_url: bool = False) -> str:
     ))
     fm_entries["shelf"] = shelf_result.status_line
     # Retraction / EoC / correction surfacing (fail-open: missing metadata
-    # just leaves these fm fields absent via _build_frontmatter's None skip)
-    fm_entries["alert"] = _build_alert_message(retraction, other_update)
+    # just leaves these fm fields absent via _build_frontmatter's None skip).
+    # Retraction/correction note takes priority over the PDF-URL note when
+    # both would apply — compute the winner explicitly then append once.
+    fm_entries.append("alert", _build_alert_message(retraction, other_update))
     fm_note = shelf_result.shelf_note or _build_correction_note(other_update)
-    # Don't clobber an existing note (PDF-URL hint): prefer the more urgent
-    # retraction/correction note; fall back to whatever was already set.
-    if fm_note:
-        fm_entries["note"] = fm_note
+    fm_entries.append("note", fm_note or pdf_note)
     fm_entries["relation"] = _relations_fm_entry(relations)
 
     fm = _build_frontmatter(fm_entries)
@@ -554,12 +552,12 @@ async def arxiv(
             f"Use paper action for full details, or {tool_name('semantic_scholar')} with ARXIV:<id> for citation data"
             if _s2_on() else "Use paper action for full details"
         )
-        fm = _build_frontmatter({
+        fm = _build_frontmatter(FMEntries({
             "api": "arXiv",
             "action": "search",
             "query": query,
             "hint": _search_hint,
-        })
+        }))
         return fm + "\n\n" + _format_arxiv_list(result, total=None, offset=offset, include_hint=False)
 
     elif action == "paper":
@@ -588,12 +586,12 @@ async def arxiv(
             f"Use paper action for full details, or {tool_name('semantic_scholar')} with ARXIV:<id> for citation data"
             if _s2_cat() else "Use paper action for full details"
         )
-        fm = _build_frontmatter({
+        fm = _build_frontmatter(FMEntries({
             "api": "arXiv",
             "action": "category",
             "category": query,
             "hint": _cat_hint,
-        })
+        }))
         return fm + "\n\n" + _format_arxiv_list(result, total=None, offset=offset, include_hint=False)
 
     else:

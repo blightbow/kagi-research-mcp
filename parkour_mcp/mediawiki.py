@@ -11,7 +11,9 @@ from pydantic import Field
 
 from .common import _API_HEADERS, RateLimiter, tool_name
 from .markdown import (
+    FMEntries,
     md,
+    _append_frontmatter_entry,
     _normalize_whitespace,
     _clean_headings,
     _build_frontmatter,
@@ -692,18 +694,19 @@ async def _handle_search(
         return f"Error: Search request failed: {e}"
 
     body = _format_mediawiki_search(results, total, offset, query, host)
-    fm_entries: dict = {
+    fm_entries = FMEntries({
         "api": f"MediaWiki ({host})",
         "action": "search",
         "query": query,
         "total_results": total,
-    }
+    })
     if namespace != 0:
         fm_entries["namespace"] = namespace
     if total > 0 and results:
-        fm_entries["hint"] = (
+        _append_frontmatter_entry(
+            fm_entries, "hint",
             f"Use {tool_name('mediawiki')} action='page' title='<title>' "
-            f"to retrieve full content for any result"
+            f"to retrieve full content for any result",
         )
     fm = _build_frontmatter(fm_entries)
     return fm + "\n\n" + _fence_content(body)
@@ -759,10 +762,10 @@ async def _handle_references(
     page_title = wiki_page["title"]
 
     body_blocks: list[str] = []
-    fm_entries: dict = {
+    fm_entries = FMEntries({
         "source": url,
         "trust": _TRUST_ADVISORY,
-    }
+    })
 
     if footnotes is not None:
         all_footnotes = _extract_citations(html)

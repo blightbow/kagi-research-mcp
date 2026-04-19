@@ -11,7 +11,7 @@ from pydantic import Field
 import httpx
 
 from .common import _API_HEADERS, _API_USER_AGENT, RateLimiter, s2_enabled, tool_name
-from .markdown import _build_frontmatter, _fence_content
+from .markdown import FMEntries, _append_frontmatter_entry, _build_frontmatter, _fence_content
 
 logger = logging.getLogger(__name__)
 
@@ -459,7 +459,7 @@ async def _fetch_rfc_paper(number: int) -> str:
     ))
 
     # Build frontmatter
-    fm_entries: dict[str, object] = {
+    fm_entries = FMEntries({
         "title": title,
         "source": f"https://www.rfc-editor.org/rfc/rfc{number}",
         "api": "IETF (RFC Editor)",
@@ -474,7 +474,7 @@ async def _fetch_rfc_paper(number: int) -> str:
             f"Use {tool_name('semantic_scholar')} with DOI:{rfc_doi} for citation data"
             if s2_enabled() else None
         ),
-    }
+    })
 
     # Subseries membership
     sub_label = _subseries_label(see_also)
@@ -489,8 +489,9 @@ async def _fetch_rfc_paper(number: int) -> str:
 
     # UNKNOWN status note — pub_status reflects original publication status
     if pub_status == "UNKNOWN":
-        fm_entries["note"] = (
-            "RFC predates the current status system; treat as informational at best"
+        _append_frontmatter_entry(
+            fm_entries, "note",
+            "RFC predates the current status system; treat as informational at best",
         )
 
     fm = _build_frontmatter(fm_entries)

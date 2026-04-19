@@ -1,5 +1,7 @@
 """Tests for parkour_mcp.markdown module."""
 
+import pytest
+
 from parkour_mcp.markdown import (
     md,
     html_to_markdown,
@@ -959,6 +961,117 @@ class TestAppendFrontmatterEntry:
         rendered = _build_frontmatter(fm)
         assert "  - fragment dropped" in rendered
         assert "  - search parser error" in rendered
+
+
+class TestFMEntries:
+    """Runtime enforcement of the helper-only mutation invariant.
+
+    FMEntries is the stdlib-based guard that makes direct writes to
+    multi-contributor frontmatter keys fail at call time rather than
+    silently clobber.  These tests cover every mutation path that
+    UserDict exposes — subscript, update, |=, setdefault — plus
+    construction semantics.
+    """
+
+    def test_init_with_protected_key_routes_through_append(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries({"source": "http://x", "warning": "seed"})
+        assert fm["warning"] == "seed"
+        assert fm["source"] == "http://x"
+
+    def test_subscript_assign_blocked_even_for_first_write(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        with pytest.raises(TypeError, match="Direct assignment"):
+            fm["warning"] = "x"
+
+    def test_subscript_assign_blocked_for_overwrite(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries({"warning": "first"})
+        with pytest.raises(TypeError, match="Direct assignment"):
+            fm["warning"] = "second"
+
+    def test_non_protected_key_subscript_works(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        fm["source"] = "http://x"
+        fm["total_slices"] = 42
+        assert fm["source"] == "http://x"
+        assert fm["total_slices"] == 42
+
+    def test_append_promotes_scalar_to_list(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        fm.append("warning", "a")
+        assert fm["warning"] == "a"
+        fm.append("warning", "b")
+        assert fm["warning"] == ["a", "b"]
+        fm.append("warning", "c")
+        assert fm["warning"] == ["a", "b", "c"]
+
+    def test_append_ignores_empty_values(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        fm.append("warning", None)
+        fm.append("warning", "")
+        assert "warning" not in fm
+
+    def test_update_routes_protected_keys_through_append(self):
+        """dict.update on CPython's fast path bypasses __setitem__ —
+        UserDict plus our override routes protected keys through
+        append() so external extra_fm merges compose cleanly."""
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries({"warning": "existing"})
+        fm.update({"warning": "from_extra", "type": "issue"})
+        assert fm["warning"] == ["existing", "from_extra"]
+        assert fm["type"] == "issue"
+
+    def test_update_from_iterable_of_pairs(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        fm.update([("warning", "a"), ("warning", "b"), ("source", "x")])
+        assert fm["warning"] == ["a", "b"]
+        assert fm["source"] == "x"
+
+    def test_ior_routes_through_update(self):
+        """``|=`` merge must go through our guard.  UserDict's default
+        __ior__ calls ``self.data |= other`` which bypasses __setitem__;
+        we override to route through self.update()."""
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries({"warning": "a"})
+        fm |= {"warning": "b"}
+        assert fm["warning"] == ["a", "b"]
+
+    def test_setdefault_blocked_for_protected_key(self):
+        """setdefault first reads then writes; the write hits __setitem__."""
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        with pytest.raises(TypeError, match="Direct assignment"):
+            fm.setdefault("warning", "x")
+
+    def test_setdefault_works_for_non_protected_key(self):
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        fm.setdefault("source", "http://x")
+        assert fm["source"] == "http://x"
+
+    def test_pop_removes_safely(self):
+        """pop is read+delete — no write, so it's safe for protected keys."""
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries()
+        fm.append("warning", "x")
+        fm.pop("warning")
+        assert "warning" not in fm
+
+    def test_render_composes_when_multiple_contributors(self):
+        """End-to-end: multiple contributors land as a YAML list in the
+        rendered frontmatter."""
+        from parkour_mcp.markdown import FMEntries
+        fm = FMEntries({"warning": "fragment"})
+        fm.update({"warning": "parser error"})
+        rendered = _build_frontmatter(fm)
+        assert "  - fragment" in rendered
+        assert "  - parser error" in rendered
 
 
 class TestApplyHardTruncation:

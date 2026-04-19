@@ -15,6 +15,7 @@ import tantivy
 from semantic_text_splitter import MarkdownSplitter
 
 from .markdown import (
+    FMEntries,
     _append_frontmatter_entry,
     _extract_sections_from_markdown,
     _build_section_list,
@@ -615,7 +616,7 @@ async def _mediawiki_fast_path(
     url: str,
     section_names: Optional[list[str]],
     max_tokens: int,
-    extra_entries: Optional[dict] = None,
+    extra_entries=None,
     cache_url: Optional[str] = None,
 ) -> Optional[str]:
     """Attempt to fetch a MediaWiki page via the API, bypassing browser/httpx.
@@ -630,11 +631,11 @@ async def _mediawiki_fast_path(
     markdown_content = _mediawiki_html_to_markdown(wiki_page["html"])
 
     title = wiki_page["title"]
-    frontmatter_entries: dict = {
+    frontmatter_entries = FMEntries({
         "source": url,
         "site": wiki_info["sitename"] or None,
         "generator": wiki_info["generator"] or None,
-    }
+    })
     if extra_entries:
         frontmatter_entries.update(extra_entries)
 
@@ -686,9 +687,10 @@ async def _mediawiki_fast_path(
         )
 
     if see_also_parts:
-        frontmatter_entries["see_also"] = (
+        _append_frontmatter_entry(
+            frontmatter_entries, "see_also",
             f"Use {tool_name('mediawiki')} action='references' to resolve: "
-            + "; ".join(see_also_parts)
+            + "; ".join(see_also_parts),
         )
 
     return _process_markdown_sections(
@@ -809,11 +811,11 @@ async def _reddit_fast_path(url: str, max_tokens: int = 5000) -> Optional[str]:
 
     truncated, trunc_hint = _apply_semantic_truncation(full_markdown, max_tokens)
 
-    fm_entries: dict[str, object] = {
+    fm_entries = FMEntries({
         "source": url,
         "api": "Reddit (.json)",
         "trust": _TRUST_ADVISORY,
-    }
+    })
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
 
@@ -862,11 +864,11 @@ async def _discourse_fast_path(
 
     truncated, trunc_hint = _apply_semantic_truncation(full_markdown, max_tokens)
 
-    fm_entries: dict[str, object] = {
+    fm_entries = FMEntries({
         "source": url,
         "api": "Discourse",
         "trust": _TRUST_ADVISORY,
-    }
+    })
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
 
@@ -969,7 +971,7 @@ async def _github_fast_path(
         total_lines = len(all_lines)
 
         source = f"https://github.com/{match.owner}/{match.repo}/blob/{match.ref}/{match.path}"
-        fm_entries: dict[str, object] = {"source": source, "api": "GitHub (raw)"}
+        fm_entries = FMEntries({"source": source, "api": "GitHub (raw)"})
         if lang:
             fm_entries["language"] = lang
 
@@ -1003,9 +1005,10 @@ async def _github_fast_path(
 
             fm_entries["lines"] = f"{start}-{end} of {total_lines}"
             if req_end > total_lines:
-                fm_entries["warning"] = (
+                _append_frontmatter_entry(
+                    fm_entries, "warning",
                     f"Requested lines {req_start}-{req_end} "
-                    f"but file ends at line {total_lines}"
+                    f"but file ends at line {total_lines}",
                 )
         else:
             # Apply max_tokens truncation only when no line range is specified
@@ -1025,9 +1028,7 @@ async def _github_fast_path(
                 display_lines = all_lines
             line_offset = 1
 
-        rl_warn = _rate_limit_warning()
-        if rl_warn:
-            fm_entries["warning"] = rl_warn
+        _append_frontmatter_entry(fm_entries, "warning", _rate_limit_warning())
         fm = _build_frontmatter(fm_entries)
 
         width = len(str(line_offset + len(display_lines) - 1))
@@ -1061,21 +1062,20 @@ async def _github_fast_path(
         )
 
         # Format truncated output
-        fm_entries: dict[str, object] = {
+        fm_entries = FMEntries({
             "source": f"https://github.com/{match.owner}/{match.repo}/issues/{match.number}",
             "api": "GitHub", "trust": _TRUST_ADVISORY,
-        }
+        })
         fm_entries.update(extra_fm)
-        rl_warn = _rate_limit_warning()
-        if rl_warn:
-            fm_entries["warning"] = rl_warn
+        _append_frontmatter_entry(fm_entries, "warning", _rate_limit_warning())
         content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
         if trunc_hint:
             fm_entries["truncated"] = trunc_hint
-            fm_entries["hint"] = (
+            _append_frontmatter_entry(
+                fm_entries, "hint",
                 "Use search= for BM25 keyword search across comments, "
                 "or section= with a comment ID (e.g. section='ic_12345') "
-                "to extract a specific comment."
+                "to extract a specific comment.",
             )
         fm = _build_frontmatter(fm_entries)
         return fm + "\n\n" + _fence_content(content, title=title)
@@ -1096,20 +1096,19 @@ async def _github_fast_path(
             renderer="github", presplit=comment_chunks,
         )
 
-        fm_entries = {
+        fm_entries = FMEntries({
             "source": f"https://github.com/{match.owner}/{match.repo}/pull/{match.number}",
             "api": "GitHub", "trust": _TRUST_ADVISORY,
-        }
+        })
         fm_entries.update(extra_fm)
-        rl_warn = _rate_limit_warning()
-        if rl_warn:
-            fm_entries["warning"] = rl_warn
+        _append_frontmatter_entry(fm_entries, "warning", _rate_limit_warning())
         content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
         if trunc_hint:
             fm_entries["truncated"] = trunc_hint
-            fm_entries["hint"] = (
+            _append_frontmatter_entry(
+                fm_entries, "hint",
                 "Use search= for BM25 keyword search across comments and review threads, "
-                "or section= with a file path or comment ID to extract specific content."
+                "or section= with a file path or comment ID to extract specific content.",
             )
         fm = _build_frontmatter(fm_entries)
         return fm + "\n\n" + _fence_content(content, title=title)
@@ -1235,16 +1234,14 @@ async def _github_fast_path(
         _page_cache.store(url, page_name, wiki_md, renderer="github")
 
         content, trunc_hint = _apply_semantic_truncation(wiki_md, max_tokens)
-        fm_entries: dict[str, object] = {
+        fm_entries = FMEntries({
             "source": wiki_url,
             "api": "GitHub (wiki)",
             "trust": _TRUST_ADVISORY,
-        }
+        })
         if trunc_hint:
             fm_entries["truncated"] = trunc_hint
-        rl_warn = _rate_limit_warning()
-        if rl_warn:
-            fm_entries["warning"] = rl_warn
+        _append_frontmatter_entry(fm_entries, "warning", _rate_limit_warning())
         fm = _build_frontmatter(fm_entries)
         return fm + "\n\n" + _fence_content(content, title=page_name)
 
@@ -1451,7 +1448,7 @@ def _process_markdown_sections(
     markdown_content: str,
     section_names: Optional[list[str]],
     max_tokens: int,
-    frontmatter_entries: dict,
+    frontmatter_entries,
     title: Optional[str] = None,
     cache_url: Optional[str] = None,
     renderer: Optional[str] = None,
@@ -1492,9 +1489,10 @@ def _process_markdown_sections(
             sections_available = _build_section_list(all_sections, include_slugs=True)
         # Warn when extracted sections have subsections not included in the output
         if sections_requested_meta and any(m.get("has_subsections") for m in sections_requested_meta):
-            frontmatter_entries["note"] = (
+            _append_frontmatter_entry(
+                frontmatter_entries, "note",
                 "Section extraction returns only the selected heading's direct content. "
-                "Subsections are separate entries — request them by name to include them."
+                "Subsections are separate entries — request them by name to include them.",
             )
 
     markdown_content, truncation_hint = _apply_semantic_truncation(markdown_content, max_tokens)
@@ -1544,10 +1542,16 @@ def _slice_output(
     if search_term is not None:
         fm_entries["search"] = f'"{search_term}"'
         fm_entries["matched_slices"] = indices
-        fm_entries["hint"] = "Use slices= to retrieve adjacent context by index"
+        _append_frontmatter_entry(
+            fm_entries, "hint",
+            "Use slices= to retrieve adjacent context by index",
+        )
     else:
         fm_entries["slices"] = indices
-        fm_entries["hint"] = "Use search= for BM25 keyword search, or slices= with adjacent indices for more context"
+        _append_frontmatter_entry(
+            fm_entries, "hint",
+            "Use search= for BM25 keyword search, or slices= with adjacent indices for more context",
+        )
 
     fm = _build_frontmatter(fm_entries)
 
@@ -1599,13 +1603,15 @@ def _build_failed_response(
     elif slice_indices is not None:
         fm_entries["slices"] = slice_indices
         fm_entries["slices_not_found"] = "unavailable"
-    fm_entries["note"] = (
+    _append_frontmatter_entry(
+        fm_entries, "note",
         "Page lacks structural boundaries needed for BM25 slicing "
-        "(single line longer than 1 MB)."
+        "(single line longer than 1 MB).",
     )
-    fm_entries["hint"] = (
+    _append_frontmatter_entry(
+        fm_entries, "hint",
         f"Use {tool_name('web_fetch_direct')} with section= to extract a "
-        "named heading, or raise max_tokens to read more of the page directly."
+        "named heading, or raise max_tokens to read more of the page directly.",
     )
     return _build_frontmatter(fm_entries)
 
@@ -1614,7 +1620,7 @@ def _search_slices(
     url: str,
     search: str,
     max_tokens: int,
-    fm_entries: dict,
+    fm_entries,
     title: Optional[str] = None,
 ) -> Optional[str]:
     """BM25 search over cached page slices.
@@ -1663,7 +1669,7 @@ def _get_slices(
     url: str,
     indices: list[int],
     max_tokens: int,
-    fm_entries: dict,
+    fm_entries,
     title: Optional[str] = None,
 ) -> Optional[str]:
     """Retrieve specific slices by index from the page cache.
@@ -1724,7 +1730,7 @@ def _dispatch_slicing(
     # (kept so slice ancestry remains informative) — skip re-adding it via
     # _fence_content to avoid a duplicated title heading.
     title = None if cached.renderer in ("reddit", "discourse") else cached.title
-    fm_base = {"source": source_url, "warning": warning}
+    fm_base = FMEntries({"source": source_url, "warning": warning})
     if search is not None:
         return _search_slices(url, search, max_tokens, fm_base, title=title) or \
             "Error: Page cache unavailable."

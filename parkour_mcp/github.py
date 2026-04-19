@@ -24,6 +24,7 @@ from pydantic import Field
 
 from .common import _API_USER_AGENT, _FETCH_HEADERS, RateLimiter, tool_name
 from .markdown import (
+    FMEntries,
     _append_frontmatter_entry,
     _apply_semantic_truncation,
     _build_frontmatter,
@@ -928,12 +929,15 @@ def _fmt_reactions(reactions: dict) -> str:
     return " ".join(parts)
 
 
-def _fm_base(source: str, api: str = "GitHub") -> dict:
-    """Build common frontmatter entries."""
-    entries: dict = {"source": source, "api": api}
-    warning = _rate_limit_warning()
-    if warning:
-        entries["warning"] = warning
+def _fm_base(source: str, api: str = "GitHub") -> FMEntries:
+    """Build common frontmatter entries.
+
+    Returns ``FMEntries`` so multi-contributor keys downstream compose
+    cleanly — any caller that later appends a ``hint`` or ``warning``
+    stacks on top of the rate-limit warning we seed here.
+    """
+    entries = FMEntries({"source": source, "api": api})
+    entries.append("warning", _rate_limit_warning())
     return entries
 
 
@@ -1003,15 +1007,13 @@ async def _action_search_issues(
     fm_entries["total_results"] = total
     fm_entries["showing"] = f"{len(items)} (page {page})"
     if incomplete:
-        fm_entries["note"] = "Results may be incomplete (search timed out)"
+        fm_entries.append("note", "Results may be incomplete (search timed out)")
 
     if not items:
         # When a label: qualifier produced zero results against a single
         # repo, fetch the repo's actual labels so the agent can retry
         # with a corrected name instead of guessing.
-        hint = await _label_hint_for_empty_search(query)
-        if hint:
-            fm_entries["hint"] = hint
+        fm_entries.append("hint", await _label_hint_for_empty_search(query))
         fm = _build_frontmatter(fm_entries)
         return fm + "\n\nNo results found."
 
@@ -1108,7 +1110,7 @@ async def _action_search_repos(
     fm_entries["total_results"] = total
     fm_entries["showing"] = f"{len(items)} (page {page})"
     if incomplete:
-        fm_entries["note"] = "Results may be incomplete (search timed out)"
+        fm_entries.append("note", "Results may be incomplete (search timed out)")
     fm = _build_frontmatter(fm_entries)
 
     if not items:
@@ -1735,12 +1737,13 @@ async def _action_repo(query: str) -> str:
         parts.append(f"\n## README\n\n{truncated}")
         if trunc_hint:
             readme_url = f"https://github.com/{owner}/{repo}/blob/{default_branch}/{readme_path}"
-            fm_entries["hint"] = (
+            fm_entries.append(
+                "hint",
                 f"README truncated. Use GitHub file action with "
                 f"'{owner}/{repo}/{readme_path}' for full content, "
-                f"or {tool_name('web_fetch_direct')}('{readme_url}', section=...) for specific sections."
+                f"or {tool_name('web_fetch_direct')}('{readme_url}', section=...) for specific sections.",
             )
-    _append_frontmatter_entry(fm_entries, "hint", template_hint)
+    fm_entries.append("hint", template_hint)
 
     fm_entries["shelf"] = await _track_repo_on_shelf(
         owner, repo, name, desc, result, citation_cff,
@@ -1780,7 +1783,7 @@ async def _action_issue_templates(query: str) -> str:
 
     chooser_url = f"https://github.com/{owner}/{repo}/issues/new/choose"
     fm_entries = _fm_base(chooser_url)
-    fm_entries["note"] = _build_issue_template_note(probe, owner, repo)
+    fm_entries.append("note", _build_issue_template_note(probe, owner, repo))
     fm_entries["trust"] = _TRUST_ADVISORY
 
     body = _format_issue_submission_section(probe) or ""
@@ -1852,7 +1855,7 @@ async def _action_tree(
 
 async def _build_issue_markdown(
     owner: str, repo: str, number: int, limit: int, page: int,
-) -> tuple[str, str, str, dict] | str:
+) -> tuple[str, str, str, FMEntries] | str:
     """Fetch issue + comments and build raw markdown.
 
     Returns (title, raw_markdown, state, extra_fm_entries) on success,
@@ -1875,9 +1878,9 @@ async def _build_issue_markdown(
     reactions = result.get("reactions", {})
     association = result.get("author_association", "")
 
-    extra_fm: dict = {"type": "issue", "state": state}
+    extra_fm = FMEntries({"type": "issue", "state": state})
     if comment_count > limit:
-        extra_fm["hint"] = f"Showing {limit} of {comment_count} comments. Use page= for more."
+        extra_fm.append("hint", f"Showing {limit} of {comment_count} comments. Use page= for more.")
 
     parts = []
     meta = f"**{owner}/{repo}#{number}** | {state} | {comment_count} comments"
@@ -1950,7 +1953,10 @@ async def _action_issue(
     content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
-        fm_entries["hint"] = f"Use page= to load more comments (page {page + 1})"
+        _append_frontmatter_entry(
+            fm_entries, "hint",
+            f"Use page= to load more comments (page {page + 1})",
+        )
     _append_frontmatter_entry(fm_entries, "hint", template_hint)
     fm = _build_frontmatter(fm_entries)
     return fm + "\n\n" + _fence_content(content, title=title)
@@ -1962,7 +1968,7 @@ async def _action_issue(
 
 async def _build_pr_markdown(
     owner: str, repo: str, number: int, limit: int, page: int,
-) -> tuple[str, str, str, dict] | str:
+) -> tuple[str, str, str, FMEntries] | str:
     """Fetch PR + review comments and build raw markdown.
 
     Returns (title, raw_markdown, display_state, extra_fm_entries) on success,
@@ -1993,7 +1999,7 @@ async def _build_pr_markdown(
 
     display_state = "merged" if merged else state
 
-    extra_fm: dict = {"type": "pull_request", "state": display_state}
+    extra_fm = FMEntries({"type": "pull_request", "state": display_state})
 
     parts = []
     meta = f"**{owner}/{repo}#{number}** | {display_state} | {head} → {base}"
@@ -2116,7 +2122,10 @@ async def _action_pull_request(
     content, trunc_hint = _apply_semantic_truncation(raw_md, 5000)
     if trunc_hint:
         fm_entries["truncated"] = trunc_hint
-        fm_entries["hint"] = f"Use page= to load more comments (page {page + 1})"
+        _append_frontmatter_entry(
+            fm_entries, "hint",
+            f"Use page= to load more comments (page {page + 1})",
+        )
     _append_frontmatter_entry(fm_entries, "hint", template_hint)
     fm = _build_frontmatter(fm_entries)
     return fm + "\n\n" + _fence_content(content, title=title)

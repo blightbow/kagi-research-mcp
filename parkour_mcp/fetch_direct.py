@@ -16,6 +16,8 @@ from .common import (
     tool_name,
 )
 from .markdown import (
+    FMEntries,
+    _append_frontmatter_entry,
     html_to_markdown, _detect_js_dependent,
     _extract_sections_from_markdown, _build_section_list,
     _filter_markdown_by_sections, _build_frontmatter, _apply_hard_truncation,
@@ -111,7 +113,7 @@ async def web_fetch_direct(
     # Only reuse "direct" or "wiki" entries.  A "js" entry was produced by
     # Playwright and should not be served from a tool that does static HTTP.
     if want_slicing:
-        fm_base = {"source": source_url, "warning": fragment_warning}
+        fm_base = FMEntries({"source": source_url, "warning": fragment_warning})
         cached = _page_cache.get(url)
         if cached and cached.renderer in ("direct", "wiki", "reddit", "discourse", "github"):
             fm_base["title"] = cached.title or "Untitled"
@@ -231,12 +233,12 @@ async def web_fetch_direct(
                     if cached and cached.markdown:
                         return _process_markdown_sections(
                             cached.markdown, section_names, max_tokens,
-                            frontmatter_entries={
+                            frontmatter_entries=FMEntries({
                                 "source": source_url,
                                 "api": "Reddit (.json)",
                                 "warning": fragment_warning,
                                 "note": permalink_note,
-                            },
+                            }),
                             cache_url=url,
                         )
                 return result
@@ -261,11 +263,11 @@ async def web_fetch_direct(
                     if cached and cached.markdown:
                         return _process_markdown_sections(
                             cached.markdown, section_names, max_tokens,
-                            frontmatter_entries={
+                            frontmatter_entries=FMEntries({
                                 "source": source_url,
                                 "api": "GitHub",
                                 "warning": fragment_warning,
-                            },
+                            }),
                             cache_url=url,
                         )
                 return result
@@ -276,7 +278,7 @@ async def web_fetch_direct(
     try:
         result = await _mediawiki_fast_path(
             url, section_names, max_tokens,
-            extra_entries={"source": source_url, "warning": fragment_warning},
+            extra_entries=FMEntries({"source": source_url, "warning": fragment_warning}),
             cache_url=url,
         )
         if result is not None:
@@ -330,11 +332,11 @@ async def web_fetch_direct(
                     if cached and cached.markdown:
                         return _process_markdown_sections(
                             cached.markdown, section_names, max_tokens,
-                            frontmatter_entries={
+                            frontmatter_entries=FMEntries({
                                 "source": source_url,
                                 "api": "Discourse",
                                 "warning": fragment_warning,
-                            },
+                            }),
                             cache_url=url,
                         )
                 return result
@@ -395,7 +397,7 @@ async def web_fetch_direct(
             return fm
         return f"Error: No content extracted from {url}"
 
-    fm_entries = {"source": source_url, "warning": fragment_warning}
+    fm_entries = FMEntries({"source": source_url, "warning": fragment_warning})
 
     # arXiv /html/ auto-tracking: if this is a full paper fetch, track it
     # on the shelf so it shows up alongside papers found via ArXiv/S2 tools.
@@ -916,23 +918,25 @@ def _sections_response(
         last_slice = slice_meta["total_slices"] - 1
 
         if slice_meta["effective_slice"] < last_slice:
-            entries["hint"] = (
+            _append_frontmatter_entry(
+                entries, "hint",
                 f"{base_hint}; "
                 f"more TOC entries available — call web_fetch_sections again with "
                 f"slice={slice_meta['effective_slice'] + 1} to advance, "
-                f"slice=-1 for the last window"
+                f"slice=-1 for the last window",
             )
         else:
-            entries["hint"] = base_hint
+            _append_frontmatter_entry(entries, "hint", base_hint)
 
         if slice_meta["clamped_from"] is not None:
-            entries["note"] = (
+            _append_frontmatter_entry(
+                entries, "note",
                 f"requested slice={slice_meta['clamped_from']} clamped to "
                 f"slice={slice_meta['effective_slice']} "
-                f"(valid range: 0..{last_slice}, or -1..-{slice_meta['total_slices']})"
+                f"(valid range: 0..{last_slice}, or -1..-{slice_meta['total_slices']})",
             )
     else:
-        entries["hint"] = base_hint
+        _append_frontmatter_entry(entries, "hint", base_hint)
 
     sections_available = _build_section_list(
         all_sections, max_sections=_TOC_SLICE_SIZE,

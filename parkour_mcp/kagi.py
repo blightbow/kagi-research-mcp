@@ -6,7 +6,7 @@ from typing import Any, Literal, Optional
 
 from kagiapi import KagiClient
 
-from .markdown import _build_frontmatter, _fence_content, _TRUST_ADVISORY
+from .markdown import FMEntries, _build_frontmatter, _fence_content, _TRUST_ADVISORY
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +171,10 @@ async def search(query: str, limit: int = 5) -> str:
 
     content = "\n".join(output_parts)
 
-    fm_entries = {
+    fm_entries = FMEntries({
         "source": f"kagi search: {query}",
         "trust": _TRUST_ADVISORY,
-    }
+    })
     balance_warning = _check_balance(response, is_summarize=False)
     if balance_warning:
         fm_entries["balance_warning"] = balance_warning
@@ -235,10 +235,10 @@ async def summarize(
     if not content:
         return "Error: No summary returned from API."
 
-    fm_entries = {
+    fm_entries = FMEntries({
         "source": url or "text input",
         "trust": _TRUST_ADVISORY,
-    }
+    })
     balance_warning = _check_balance(response, is_summarize=True)
     if balance_warning:
         fm_entries["balance_warning"] = balance_warning
