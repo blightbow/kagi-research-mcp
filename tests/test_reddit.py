@@ -1,8 +1,7 @@
 """Tests for the Reddit fast path."""
 
-import httpx
 import pytest
-import respx
+from curl_cffi.requests import exceptions as cc_exc
 
 from parkour_mcp.reddit import (
     _detect_reddit_url,
@@ -436,81 +435,77 @@ class TestFormatTimestamp:
 # ---------------------------------------------------------------------------
 
 class TestFetchRedditContent:
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_fetches_comment_thread(self):
+    async def test_fetches_comment_thread(self, fake_async_session):
         url = "https://old.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(200, json=THREAD_JSON))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            json_data=THREAD_JSON,
+        )
 
         title, md = await _fetch_reddit_content(url)
         assert title == "Test Post Title"
         assert "This is the post body." in md
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_fetches_subreddit_listing(self):
+    async def test_fetches_subreddit_listing(self, fake_async_session):
         url = "https://old.reddit.com/r/Python/"
-        respx.get(
-            "https://old.reddit.com/r/Python/.json"
-        ).mock(return_value=httpx.Response(200, json=LISTING_JSON))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/.json",
+            json_data=LISTING_JSON,
+        )
 
         title, md = await _fetch_reddit_content(url)
         assert title == "r/Python"
         assert "Post 0" in md
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_http_error_returns_error_string(self):
+    async def test_http_error_returns_error_string(self, fake_async_session):
         url = "https://old.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(404))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            status=404,
+        )
 
         title, md = await _fetch_reddit_content(url)
         assert title == "Reddit"
         assert "Error" in md
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_rate_limit_429(self):
+    async def test_rate_limit_429(self, fake_async_session):
         url = "https://old.reddit.com/r/Python/"
-        respx.get(
-            "https://old.reddit.com/r/Python/.json"
-        ).mock(return_value=httpx.Response(429))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/.json",
+            status=429,
+        )
 
         _, md = await _fetch_reddit_content(url)
         assert "rate limit" in md.lower()
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_timeout_returns_error(self):
+    async def test_timeout_returns_error(self, fake_async_session):
         url = "https://old.reddit.com/r/Python/"
-        respx.get(
-            "https://old.reddit.com/r/Python/.json"
-        ).mock(side_effect=httpx.TimeoutException("timeout"))
+        fake_async_session.raise_on_get(
+            "https://old.reddit.com/r/Python/.json",
+            cc_exc.Timeout("timeout"),
+        )
 
         _, md = await _fetch_reddit_content(url)
         assert "timed out" in md.lower()
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_redd_it_resolves_redirect(self):
-        # redd.it redirects 301 → www.reddit.com; httpx follows with follow_redirects=True
-        respx.head("https://redd.it/abc123").mock(
-            return_value=httpx.Response(
-                301,
-                headers={"location": "https://www.reddit.com/r/Python/comments/abc123/test/"},
-            ),
+    async def test_redd_it_resolves_redirect(self, fake_async_session):
+        # redd.it HEAD follows redirects server-side; the mock returns the
+        # post-redirect URL as the response's .url attribute, which
+        # _resolve_redd_it reads via str(resp.url).
+        fake_async_session.mock_head(
+            "https://redd.it/abc123",
+            final_url="https://www.reddit.com/r/Python/comments/abc123/test/",
         )
-        # httpx follows the redirect and sends HEAD to the target
-        respx.head("https://www.reddit.com/r/Python/comments/abc123/test/").mock(
-            return_value=httpx.Response(200),
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            json_data=THREAD_JSON,
         )
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(200, json=THREAD_JSON))
 
         title, _ = await _fetch_reddit_content("https://redd.it/abc123")
         assert title == "Test Post Title"
@@ -521,13 +516,13 @@ class TestFetchRedditContent:
 # ---------------------------------------------------------------------------
 
 class TestRedditFastPath:
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_reddit_url_intercepted(self):
+    async def test_reddit_url_intercepted(self, fake_async_session):
         url = "https://www.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(200, json=THREAD_JSON))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            json_data=THREAD_JSON,
+        )
 
         result = await _reddit_fast_path(url)
         assert result is not None
@@ -539,25 +534,25 @@ class TestRedditFastPath:
         result = await _reddit_fast_path("https://example.com/page")
         assert result is None
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_error_returns_string_not_none(self):
+    async def test_error_returns_string_not_none(self, fake_async_session):
         url = "https://www.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(500))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            status=500,
+        )
 
         result = await _reddit_fast_path(url)
         assert result is not None
         assert "Error" in result
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_cache_populated(self):
+    async def test_cache_populated(self, fake_async_session):
         url = "https://www.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(200, json=THREAD_JSON))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            json_data=THREAD_JSON,
+        )
 
         await _reddit_fast_path(url)
         cached = _page_cache.get(url)
@@ -565,14 +560,14 @@ class TestRedditFastPath:
         assert cached.renderer == "reddit"
         assert cached.title == "Test Post Title"
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_slicing_search(self):
+    async def test_slicing_search(self, fake_async_session):
         """BM25 search over cached Reddit content works."""
         url = "https://www.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(200, json=THREAD_JSON))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            json_data=THREAD_JSON,
+        )
 
         await _reddit_fast_path(url)
         cached = _page_cache.get(url)
@@ -580,14 +575,14 @@ class TestRedditFastPath:
         indices = cached.search("post body")
         assert len(indices) > 0
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_fenced_content(self):
+    async def test_fenced_content(self, fake_async_session):
         """Output should have content fencing for untrusted content."""
         url = "https://www.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(200, json=THREAD_JSON))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            json_data=THREAD_JSON,
+        )
 
         result = await _reddit_fast_path(url)
         assert result is not None
@@ -595,9 +590,8 @@ class TestRedditFastPath:
         assert "└─ untrusted content" in result
         assert "│" in result
 
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_comment_aware_slicing(self):
+    async def test_comment_aware_slicing(self, fake_async_session):
         """Cache should split by comment, not arbitrary text boundaries."""
         reply = _make_comment(id="reply_1", author="replier", body="A reply", score=3)
         c1 = _make_comment(
@@ -607,9 +601,10 @@ class TestRedditFastPath:
         c2 = _make_comment(id="comment_2", author="user_b", body="Second comment")
         data = _make_thread_json(comments=[c1, c2])
         url = "https://www.reddit.com/r/Python/comments/abc123/test/"
-        respx.get(
-            "https://old.reddit.com/r/Python/comments/abc123/test/.json"
-        ).mock(return_value=httpx.Response(200, json=data))
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/test/.json",
+            json_data=data,
+        )
 
         await _reddit_fast_path(url)
         cached = _page_cache.get(url)

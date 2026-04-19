@@ -13,6 +13,7 @@ dependencies = [
     "kagiapi",
     "beautifulsoup4",
     "httpx",
+    "curl-cffi>=0.15.0",
     "playwright",
     "markdownify",
     "semantic-text-splitter>=0.29.0",

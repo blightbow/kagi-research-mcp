@@ -57,6 +57,84 @@ def _disable_reddit_rate_limit(monkeypatch):
     monkeypatch.setattr(_reddit_mod._reddit_limiter, "min_interval", 0.0)
 
 
+class FakeResponse:
+    """Stand-in for curl_cffi.requests.Response used in tests.
+
+    Only implements the attributes our code reads: ``status_code``,
+    ``url`` (string form, matching ``str(resp.url)`` in the real path),
+    ``headers``, ``json()``, ``raise_for_status()``.
+    """
+
+    def __init__(self, status_code=200, json_data=None, headers=None, url=""):
+        self.status_code = status_code
+        self._json = json_data
+        self.headers = headers or {}
+        self.url = url
+
+    def json(self):
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            from curl_cffi.requests.exceptions import HTTPError
+            err = HTTPError(f"HTTP {self.status_code}")
+            err.response = self
+            raise err
+
+
+class _FakeAsyncSession:
+    """URL-keyed mock for curl_cffi's AsyncSession — respx-like semantics."""
+
+    def __init__(self):
+        self._get: dict[str, object] = {}
+        self._head: dict[str, object] = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    async def get(self, url, **_):
+        return self._dispatch("GET", self._get, url)
+
+    async def head(self, url, **_):
+        # HEAD defaults to 200 with url-as-final to support redirect-follow tests
+        return self._dispatch("HEAD", self._head, url, default=FakeResponse(200, url=url))
+
+    @staticmethod
+    def _dispatch(method, table, url, default=None):
+        v = table.get(url, default)
+        if v is None:
+            raise RuntimeError(f"No mock registered for {method} {url}")
+        if isinstance(v, BaseException):
+            raise v
+        return v
+
+    def mock_get(self, url, *, status=200, json_data=None, headers=None, final_url=None):
+        self._get[url] = FakeResponse(status, json_data=json_data, headers=headers, url=final_url or url)
+
+    def mock_head(self, url, *, status=200, headers=None, final_url=None):
+        self._head[url] = FakeResponse(status, headers=headers, url=final_url or url)
+
+    def raise_on_get(self, url, exc):
+        self._get[url] = exc
+
+
+@pytest.fixture
+def fake_async_session(monkeypatch):
+    """Replace curl_cffi.requests.AsyncSession in reddit.py with a URL-keyed mock.
+
+    Usage:
+        fake_async_session.mock_get(url, json_data=..., status=200)
+        fake_async_session.mock_head(url, final_url=..., status=200)
+        fake_async_session.raise_on_get(url, cc_exc.Timeout("..."))
+    """
+    fake = _FakeAsyncSession()
+    monkeypatch.setattr("parkour_mcp.reddit.AsyncSession", lambda *a, **kw: fake)
+    return fake
+
+
 @pytest.fixture(autouse=True)
 def _disable_github_rate_limit(monkeypatch):
     """Disable the 1s GitHub rate limiter in unit tests."""

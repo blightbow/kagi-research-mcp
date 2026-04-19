@@ -14,11 +14,19 @@ from enum import Enum
 from typing import Optional, Union
 from urllib.parse import urlparse, urlunparse, urlencode, parse_qs
 
-import httpx
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import exceptions as cc_exc
 
-from .common import RateLimiter, _FETCH_HEADERS
+from .common import RateLimiter
 
 logger = logging.getLogger(__name__)
+
+# Reddit began blocking httpx's TLS fingerprint in April 2026 while still
+# serving browsers — same headers via curl get 200, via httpx get 403. All
+# curl_cffi Chrome profiles are also blocked (their detector specifically
+# targets Chrome JA3/JA4); Safari and Firefox profiles pass. Keep this on
+# a recent Safari profile and revisit if Reddit broadens the filter.
+_IMPERSONATE_PROFILE = "safari184"
 
 # ---------------------------------------------------------------------------
 # Rate limiter — 2s between unauthenticated requests
@@ -115,12 +123,11 @@ async def _resolve_redd_it(url: str) -> Optional[str]:
     """Follow a redd.it short link redirect to get the canonical URL."""
     try:
         await _reddit_limiter.wait()
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=10.0,
+        async with AsyncSession(
+            impersonate=_IMPERSONATE_PROFILE,
         ) as client:
-            resp = await client.head(url, headers=_FETCH_HEADERS)
+            resp = await client.head(url, timeout=10, allow_redirects=True)
             final = str(resp.url)
-            # Normalise the resolved URL
             return _detect_reddit_url(final)
     except Exception as exc:
         logger.debug("redd.it redirect failed for %s: %s", url, exc)
@@ -142,19 +149,20 @@ async def _fetch_reddit_json(url: str) -> Union[list, dict, str]:
 
     await _reddit_limiter.wait()
     try:
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=30.0,
+        async with AsyncSession(
+            impersonate=_IMPERSONATE_PROFILE,
         ) as client:
-            resp = await client.get(json_url, headers=_FETCH_HEADERS)
+            resp = await client.get(json_url, timeout=30, allow_redirects=True)
             if resp.status_code == 429:
                 return "Error: Reddit rate limit exceeded. Try again later."
             resp.raise_for_status()
             return resp.json()
-    except httpx.TimeoutException:
+    except cc_exc.Timeout:
         return f"Error: Request timed out for {url}"
-    except httpx.HTTPStatusError as exc:
-        return f"Error: HTTP {exc.response.status_code} for {url}"
-    except httpx.RequestError as exc:
+    except cc_exc.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        return f"Error: HTTP {status} for {url}"
+    except cc_exc.RequestException as exc:
         return f"Error: Failed to fetch {url} — {type(exc).__name__}"
     except ValueError:
         return f"Error: Invalid JSON response from {url}"
