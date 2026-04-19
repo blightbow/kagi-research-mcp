@@ -42,6 +42,13 @@ Frontmatter serves three roles:
   purposes.  If a value needs to reach multiple consumers, pass it
   as a separate parameter.  This prevents accidental leakage of
   untrusted data into frontmatter when a pop step is missed.
+- **Protected multi-contributor keys must be appended, not assigned.**
+  `hint`, `warning`, `note`, `see_also`, and `alert` receive
+  contributions from multiple subsystems in a single request.  Write
+  them through `fm_entries.append(key, value)` or
+  `_append_frontmatter_entry(fm_entries, key, value)`; direct
+  assignment raises `TypeError` on an `FMEntries` instance.  See
+  *Multi-Contributor Keys (Protected)* below for the full mechanism.
 
 ## Content Fencing
 
@@ -141,6 +148,42 @@ The value in `alert:` uses only structurally-validated fields (dates
 constrained to ISO format, DOIs regex-checked, source values from a
 closed enum).  Free-form text from external APIs (e.g. CrossRef's
 `label` field) is rendered inside the content fence, never in `alert:`.
+
+## Multi-Contributor Keys (Protected)
+
+Five fields are treated as multi-contributor and may not be written via
+direct assignment:
+
+| Key        | Typical contributors |
+|------------|-----------------------|
+| `hint`     | pagination advisories, truncation drill-ins, search-parser guidance, fragment-resolution hints |
+| `warning`  | rate-limit advisories, balance warnings, parameter-conflict notices |
+| `note`     | shelving side-effects, behavior-explaining annotations, correction notices |
+| `see_also` | cross-tool pointers, related-resource references |
+| `alert`    | retraction / expression-of-concern notices (retroactively invalidating prior output) |
+
+These fields can receive contributions from multiple subsystems in a
+single request.  Direct ``fm_entries[key] = value`` would silently drop
+any prior contributor, so `FMEntries.__setitem__` raises `TypeError` on
+them.  Update protected keys through either of:
+
+- `fm_entries.append(key, value)`: the sanctioned method on `FMEntries`
+- `_append_frontmatter_entry(fm_entries, key, value)`: free helper form
+
+Both promote scalar → list on the second write, so the first caller
+lands a scalar and a second contributor upgrades the field to a YAML
+sequence automatically.  `None` / falsy values are dropped silently so
+conditional callers can hand in values without a preflight check.
+
+Composition via `FMEntries.update()` or `|=` routes protected keys
+through `.append` automatically, so callers merging helper return values
+(e.g. `extra_fm` dicts) don't need to split paths by key.
+
+The guard is enforced only when `fm_entries` is an `FMEntries` instance
+(not a plain `dict`).  New code that builds frontmatter should construct
+`FMEntries(...)` so the clobber bug surfaces at write time rather than
+manifesting as a silent loss of advisories in production output.
+`_build_frontmatter()` accepts either type.
 
 ## List Values
 
