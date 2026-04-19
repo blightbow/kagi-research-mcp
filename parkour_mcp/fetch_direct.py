@@ -193,8 +193,28 @@ async def web_fetch_direct(
 
     # --- Reddit fast path (after DOI, before MediaWiki) ---
     try:
-        from .reddit import _detect_reddit_url
+        from .reddit import _detect_reddit_url, _extract_comment_permalink
         if _detect_reddit_url(url):
+            # Comment-permalink normalization: /r/SUB/comments/POSTID/slug/COMMENTID/
+            # silently returns only the linked comment's subtree from
+            # Reddit, dropping the rest of the thread.  Strip the
+            # trailing COMMENTID so the fetch grabs the full post, and
+            # (if the caller didn't set their own section=/search=/slices=)
+            # promote COMMENTID to section= so the output still lands
+            # on the comment the URL pointed to.
+            permalink_note: Optional[str] = None
+            permalink = _extract_comment_permalink(url)
+            if permalink:
+                url, permalink_comment_id = permalink
+                if not want_slicing and not section_names:
+                    section_names = [permalink_comment_id]
+                    permalink_note = (
+                        f"URL identified comment {permalink_comment_id!r}; "
+                        f"fetched the full post and scoped output to that "
+                        f"comment via section=. Use slices= or a different "
+                        f"section= to see other comments in the thread."
+                    )
+
             # Always run the fast path first — it populates _page_cache
             result = await _reddit_fast_path(url, max_tokens)
             if result is not None:
@@ -215,6 +235,7 @@ async def web_fetch_direct(
                                 "source": source_url,
                                 "api": "Reddit (.json)",
                                 "warning": fragment_warning,
+                                "note": permalink_note,
                             },
                             cache_url=url,
                         )

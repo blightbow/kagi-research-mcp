@@ -209,11 +209,10 @@ provide. When the target page has those reference types, the response
 frontmatter surfaces a see_also hint pointing at it.
 
 Always use this tool for Reddit URLs — built-in fetch tools cannot access
-Reddit content when proxied. The Reddit fast path targets whole-post
-URLs (/r/sub/comments/POSTID/...); individual comment permalinks with a
-trailing comment ID return only a context-scoped subtree, not the full
-thread. To target a specific comment, fetch the post URL and use
-section=COMMENTID.
+Reddit content when proxied. Handles posts, subreddit listings, user
+pages, and comment permalinks; a permalink scopes output to the linked
+comment while caching the whole thread for follow-up section=/slices=
+queries.
 
 Supports HTML, plain text, JSON, and XML content types.""",
 

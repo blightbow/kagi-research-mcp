@@ -100,6 +100,44 @@ class RedditPageType(Enum):
 _COMMENT_RE = re.compile(r"/r/[^/]+/comments/\w+", re.IGNORECASE)
 _USER_RE = re.compile(r"/(?:u|user)/[^/]+", re.IGNORECASE)
 
+# Comment permalink: /r/SUB/comments/POSTID/slug/COMMENTID/ — points at
+# a specific comment within a post.  Reddit's .json endpoint serves a
+# context-scoped subtree for these URLs (the comment + its replies, not
+# the full thread), which silently truncates most of the conversation.
+# Canonical Reddit permalinks always include the slug; we require it to
+# disambiguate from a slug-less whole-post URL /r/SUB/comments/POSTID/.
+_PERMALINK_RE = re.compile(
+    r"^/r/([^/]+)/comments/(\w+)/([^/]+)/(\w+)/?$",
+    re.IGNORECASE,
+)
+
+
+def _extract_comment_permalink(url: str) -> Optional[tuple[str, str]]:
+    """Decompose a comment-permalink URL into (stripped_url, comment_id).
+
+    Returns ``None`` for whole-post URLs, subreddit listings, user
+    pages, or any other URL shape — callers treat ``None`` as "not a
+    permalink, handle normally."
+
+    ``stripped_url`` points at the containing post (with any comment-ID
+    suffix removed); ``comment_id`` is the identifier of the targeted
+    comment.  Callers can use it as a ``section=`` filter on the
+    full-thread fetch: the Reddit renderer emits ``### {id}`` /
+    ``#### {id}`` headings for each comment, so the section filter
+    resolves naturally against the cached markdown.
+    """
+    parsed = urlparse(url)
+    m = _PERMALINK_RE.match(parsed.path)
+    if not m:
+        return None
+    sub, post, slug, comment_id = m.groups()
+    stripped_path = f"/r/{sub}/comments/{post}/{slug}/"
+    stripped = urlunparse((
+        parsed.scheme, parsed.netloc, stripped_path,
+        "", parsed.query, "",
+    ))
+    return stripped, comment_id
+
 def _classify_reddit_url(url: str) -> RedditPageType:
     """Classify a Reddit URL by page type."""
     if _REDD_IT_RE.match(url):

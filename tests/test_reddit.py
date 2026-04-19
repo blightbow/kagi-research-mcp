@@ -6,6 +6,7 @@ from curl_cffi.requests import exceptions as cc_exc
 from parkour_mcp.reddit import (
     _detect_reddit_url,
     _classify_reddit_url,
+    _extract_comment_permalink,
     _fetch_reddit_content,
     _format_comment_thread,
     _format_listing,
@@ -163,6 +164,55 @@ class TestDetectRedditUrl:
         result = _detect_reddit_url("https://www.reddit.com/u/spez/")
         assert result is not None
         assert "old.reddit.com" in result
+
+
+# ---------------------------------------------------------------------------
+# Comment-permalink extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractCommentPermalink:
+    def test_permalink_with_slug(self):
+        url = "https://old.reddit.com/r/LocalLLaMA/comments/1sp10oa/kimi_k26_soon/ogz8eaz/"
+        result = _extract_comment_permalink(url)
+        assert result is not None
+        stripped, comment_id = result
+        assert stripped == "https://old.reddit.com/r/LocalLLaMA/comments/1sp10oa/kimi_k26_soon/"
+        assert comment_id == "ogz8eaz"
+
+    def test_permalink_without_trailing_slash(self):
+        url = "https://old.reddit.com/r/Python/comments/abc123/title/def456"
+        result = _extract_comment_permalink(url)
+        assert result is not None
+        stripped, comment_id = result
+        assert stripped == "https://old.reddit.com/r/Python/comments/abc123/title/"
+        assert comment_id == "def456"
+
+    def test_permalink_preserves_query_string(self):
+        url = "https://old.reddit.com/r/Python/comments/abc123/title/def456/?context=3"
+        result = _extract_comment_permalink(url)
+        assert result is not None
+        stripped, _ = result
+        assert stripped == "https://old.reddit.com/r/Python/comments/abc123/title/?context=3"
+
+    def test_whole_post_returns_none(self):
+        url = "https://old.reddit.com/r/Python/comments/abc123/title/"
+        assert _extract_comment_permalink(url) is None
+
+    def test_whole_post_no_slug_returns_none(self):
+        # Ambiguous slug-less form /r/SUB/comments/POSTID/ — we require
+        # the slug to disambiguate from permalinks, so this must NOT
+        # match (falling through to normal whole-post handling).
+        url = "https://old.reddit.com/r/Python/comments/abc123/"
+        assert _extract_comment_permalink(url) is None
+
+    def test_subreddit_returns_none(self):
+        assert _extract_comment_permalink("https://old.reddit.com/r/Python/") is None
+
+    def test_user_page_returns_none(self):
+        assert _extract_comment_permalink("https://old.reddit.com/u/spez/") is None
+
+    def test_non_reddit_returns_none(self):
+        assert _extract_comment_permalink("https://example.com/some/path/") is None
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +668,101 @@ class TestRedditFastPath:
         assert "### comment_2" in cached.slices[3]
         # Post body slice should NOT contain comment headings
         assert "###" not in cached.slices[0]
+
+
+# ---------------------------------------------------------------------------
+# Comment-permalink integration (URL normalization in fetch_direct)
+# ---------------------------------------------------------------------------
+
+class TestRedditCommentPermalinkIntegration:
+    """End-to-end tests for comment-permalink URL normalization.
+
+    The permalink normalizer lives in ``fetch_direct.py``'s Reddit
+    dispatch block, upstream of ``_reddit_fast_path``, so these tests
+    exercise the ``web_fetch_direct`` entry point directly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_permalink_strips_and_injects_section(self, fake_async_session):
+        from parkour_mcp.fetch_direct import web_fetch_direct
+
+        target = _make_comment(id="target_c", author="u", body="TARGET BODY", score=5)
+        other = _make_comment(id="other_c", author="u2", body="other body", score=3)
+        data = _make_thread_json(comments=[target, other])
+
+        # Mock the WHOLE-POST .json — the normalizer strips COMMENTID before fetching
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/title/.json",
+            json_data=data,
+        )
+
+        permalink = "https://www.reddit.com/r/Python/comments/abc123/title/target_c/"
+        result = await web_fetch_direct(permalink, max_tokens=3000)
+
+        assert "TARGET BODY" in result
+        assert "other body" not in result
+        assert "identified comment 'target_c'" in result
+        # Cache key is the stripped URL (trailing comment ID removed),
+        # keeping the input's netloc — a subsequent fetch of the post
+        # URL hits the same cache entry.
+        assert _page_cache.get("https://www.reddit.com/r/Python/comments/abc123/title/") is not None
+        assert _page_cache.get("https://www.reddit.com/r/Python/comments/abc123/title/target_c/") is None
+
+    @pytest.mark.asyncio
+    async def test_permalink_with_explicit_section_user_wins(self, fake_async_session):
+        from parkour_mcp.fetch_direct import web_fetch_direct
+
+        target = _make_comment(id="target_c", author="u", body="TARGET BODY", score=5)
+        other = _make_comment(id="other_c", author="u2", body="OTHER BODY", score=3)
+        data = _make_thread_json(comments=[target, other])
+
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/title/.json",
+            json_data=data,
+        )
+
+        permalink = "https://www.reddit.com/r/Python/comments/abc123/title/target_c/"
+        result = await web_fetch_direct(permalink, max_tokens=3000, section="other_c")
+
+        # User's explicit section= wins over the URL's implicit target
+        assert "OTHER BODY" in result
+        assert "TARGET BODY" not in result
+        # No permalink note — the URL strip is silent when the caller overrides
+        assert "identified comment" not in result
+
+    @pytest.mark.asyncio
+    async def test_permalink_with_search_fetches_full_thread(self, fake_async_session):
+        from parkour_mcp.fetch_direct import web_fetch_direct
+
+        target = _make_comment(id="target_c", author="u", body="TARGET BODY", score=5)
+        other = _make_comment(id="other_c", author="u2", body="other discussion", score=3)
+        data = _make_thread_json(comments=[target, other])
+
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/title/.json",
+            json_data=data,
+        )
+
+        permalink = "https://www.reddit.com/r/Python/comments/abc123/title/target_c/"
+        result = await web_fetch_direct(permalink, max_tokens=3000, search="discussion")
+
+        # Search runs over the full thread (both comments cached), returns
+        # matches — no implicit section filter narrows scope.
+        assert "other discussion" in result
+
+    @pytest.mark.asyncio
+    async def test_whole_post_url_unchanged(self, fake_async_session):
+        from parkour_mcp.fetch_direct import web_fetch_direct
+
+        fake_async_session.mock_get(
+            "https://old.reddit.com/r/Python/comments/abc123/title/.json",
+            json_data=THREAD_JSON,
+        )
+
+        url = "https://www.reddit.com/r/Python/comments/abc123/title/"
+        result = await web_fetch_direct(url, max_tokens=3000)
+        # No permalink note — this was never a permalink
+        assert "identified comment" not in result
 
 
 # ---------------------------------------------------------------------------
