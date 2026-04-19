@@ -324,7 +324,9 @@ class _CacheEntry:
         self._ensure_built()
         if not self._tantivy_index or not self._slices:
             return []
-        query = self._tantivy_index.parse_query(query_str, ["body"])
+        query, errors = self._tantivy_index.parse_query_lenient(query_str, ["body"])
+        if errors:
+            logger.warning("tantivy query parse errors for %r: %s", query_str, errors)
         searcher = self._tantivy_index.searcher()
         results = searcher.search(query, limit=limit)
         return [searcher.doc(addr)["idx"][0] for _score, addr in results.hits]
