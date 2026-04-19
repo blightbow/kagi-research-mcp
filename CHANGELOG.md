@@ -5,8 +5,6 @@ All notable changes to parkour-mcp will be documented in this file.
 Format: https://keepachangelog.com/en/1.1.0/
 Versioning: https://semver.org/spec/v2.0.0.html
 
-<!-- towncrier release notes start -->
-
 ## [1.2.0] 2026-04-19
 
 ### Added

@@ -93,11 +93,13 @@ API integration modules (each ~300-650 LOC, self-contained):
 
 ## Release process
 
-Releases use **towncrier** for CHANGELOG assembly and **commitizen** for version bumping from Conventional Commits. Local flow is driven by the `/release` slash command in `.claude/commands/release.md`; CI (`.github/workflows/release.yml`) handles build + publish on tag push.
+Releases use **git-cliff** for CHANGELOG assembly and **commitizen** for version bumping from Conventional Commits. Local flow is driven by the `/release` slash command in `.claude/commands/release.md`; CI (`.github/workflows/release.yml`) handles build + publish on tag push.
+
+Install git-cliff locally via `brew install git-cliff`. CI installs it via `taiki-e/install-action@git-cliff` (it's a Rust binary, not pip-installable).
 
 ### Why: commit trailers
 
-Every `feat:`, `fix:`, `refactor:`, and `perf:` commit should include a `Why:` trailer stating user-visible impact in one sentence. The trailer is the source of truth for the corresponding news fragment, and the fragment is what lands in `CHANGELOG.md`. Example:
+Every `feat:`, `fix:`, `refactor:`, and `perf:` commit MUST include a `Why:` trailer stating user-visible impact in a single flowing sentence. **The trailer is the source of the corresponding CHANGELOG.md bullet.** git-cliff extracts `Why:` trailers as the user-facing prose for each entry. Commits without a `Why:` trailer fall back to the bare subject, which produces weaker release notes. Example:
 
 ```
 fix(pipeline): surface tantivy parse warnings in search frontmatter
@@ -106,21 +108,26 @@ Tantivy emits structured warnings for malformed query syntax but the
 pipeline was discarding them, leaving callers with zero-result searches
 and no hint why.
 
-Why: queries with unsupported operators now report the parse error in
-  the response frontmatter instead of returning empty.
+Why: queries with unsupported operators now report the parse error in the response frontmatter instead of returning empty.
 ```
 
-`chore:`, `docs:`, `test:`, `style:`, `build:`, `ci:`, `revert:` do not need `Why:` and typically do not need a news fragment.
+Write `Why:` as a single logical line (wrap in your editor, but no hard newlines in the value). git-cliff preserves multi-line trailers verbatim and the Tera template flattens them, but single-line is the path of least resistance.
 
-### News fragments
+`chore:`, `docs:`, `test:`, `style:`, `build:`, `ci:`, `revert:`, `release:` do not need `Why:`. `docs:` and `test:` still appear in the changelog (under Documentation / Miscellaneous) using their commit subject as the bullet text.
 
-Add a fragment in `changes/` for every `feat:`/`fix:`/`refactor:`/`perf:` change. Use the orphan naming form so rebases never conflict:
+### Commit type to CHANGELOG section mapping
 
-```
-+<slug>.<type>.md
-```
+| Commit prefix | Section |
+|---|---|
+| `feat:` | Added |
+| `refactor:` / `perf:` | Changed |
+| `fix:` | Fixed |
+| any type with `(security)` scope | Security |
+| `docs:` | Documentation |
+| `test:` | Miscellaneous |
+| `chore:`, `build:`, `ci:`, `style:`, `release:` | (skipped) |
 
-Types: `feature`, `changed`, `bugfix`, `removal`, `security`, `doc`, `misc`. Write the fragment for the *caller* of the tool, not the commit author. See `changes/README.md` for guidance and examples.
+**Security scope convention**: Conventional Commits has no `security` type, so security-relevant changes piggyback on existing types via a `(security)` scope. Examples: `test(security): enforce SSRF precedence`, `fix(security): harden content fence`, `chore(security): update supply-chain allowlist`. Any commit with `(security)` in its scope routes to the Security section regardless of type.
 
 ### Version file discipline
 

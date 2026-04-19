@@ -12,10 +12,16 @@ Run these in parallel and report briefly:
 - `git status` (working tree must be clean)
 - `git log origin/main..HEAD --oneline` (show the commits that will ship)
 - `uv run cz bump --get-next --yes` (next version from commits since last tag)
-- `ls changes/*.md 2>/dev/null | grep -v README` (news fragments waiting for consumption)
 
-Abort if any of: working tree dirty, no commits ahead of origin/main, no
-fragments in `changes/`. Flag to the user instead of proceeding.
+Abort if working tree is dirty or no commits ahead of origin/main.
+Flag to the user instead of proceeding.
+
+Also spot-check that every `feat:` / `fix:` / `refactor:` / `perf:`
+commit in the range carries a `Why:` trailer. Run
+`git log origin/main..HEAD --format='%h %s%n%(trailers:key=Why,only)'`
+and flag any commits that are missing one. `Why:` trailers are the
+source of release-note prose; commits without them fall back to the
+bare subject which produces weaker changelog entries.
 
 ## Step 2: Preview
 
@@ -23,12 +29,13 @@ Show the user what will land:
 
 ```
 uv run cz bump --dry-run --yes
-uv run towncrier build --draft --version <NEXT>
+git cliff --tag v<NEXT> --unreleased
 ```
 
 where `<NEXT>` is the version from step 1. Together these preview the
-version bump and the CHANGELOG entry without writing anything. Pause;
-let the user approve or ask for fragment edits before you stage.
+version bump and the assembled CHANGELOG entry without writing
+anything. Pause; let the user approve or ask for commit-message edits
+(via `git commit --amend` or `git rebase -i`) before you stage.
 
 If the user wants a public RC (finals-only is the default), they can
 ask for it explicitly. The RC equivalent of step 3 is:
@@ -55,12 +62,13 @@ commit:
 
 ```
 NEXT=$(uv run python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-uv run towncrier build --yes --version "$NEXT"
+git cliff --tag "v$NEXT" --unreleased --prepend CHANGELOG.md
 uv run python3 scripts/sync_versions.py
 ```
 
-- `towncrier build` consumes the fragments in `changes/` and prepends
-  an assembled `## [$NEXT] <date>` entry to `CHANGELOG.md`.
+- `git cliff --tag --unreleased --prepend` parses Conventional Commits
+  from git log, extracts `Why:` trailers as user-facing narrative, and
+  prepends an assembled `## [$NEXT] <date>` section to `CHANGELOG.md`.
 - `sync_versions.py` mirrors the new `project.version` into
   `manifest.json` (translated to strict SemVer for Claude Desktop) and
   `server.json` (PEP 440 verbatim for MCP Registry).
@@ -68,17 +76,18 @@ uv run python3 scripts/sync_versions.py
 ## Step 4: Review
 
 - Show `git status` to confirm the changed set (pyproject, CHANGELOG,
-  manifest, server, plus consumed fragment files under `changes/`).
+  manifest, server).
 - Show `git diff` for the new CHANGELOG.md entry specifically.
-- The towncrier fragments were already written user-facing, but final
-  prose is your last chance to tighten wording. Offer specific
-  rewrites for any entry that reads as "describes the diff" rather
-  than "describes user-visible impact."
-- If the user edits `CHANGELOG.md` directly, no re-staging needed; we
-  `git add` everything in the next step.
-- Sanity: every `feat:` / `fix:` / `refactor:` / `perf:` commit in the
-  range should have produced a fragment, and therefore a bullet in the
-  new section. Flag any that didn't.
+- git-cliff renders the `Why:` trailer as the bullet text. If any
+  trailer was written loosely at commit time, this is the last chance
+  to tighten it. Options: amend the commit's trailer and re-run
+  `git cliff --tag --unreleased --prepend CHANGELOG.md` (after
+  reverting the previous CHANGELOG edit), or hand-edit CHANGELOG.md
+  directly. The latter is simpler for small wording tweaks.
+- Sanity: every `feat:` / `fix:` / `refactor:` / `perf:` commit in
+  the range should produce a bullet in the matching section. Flag any
+  that are missing (probably means the commit's type didn't match any
+  `commit_parsers` rule in `pyproject.toml`).
 
 ## Step 5: Commit, then tag
 
