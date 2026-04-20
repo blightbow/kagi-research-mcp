@@ -174,8 +174,10 @@ commit_parsers = [
   # to the Security section regardless of type. This matters because
   # Conventional Commits has no `security` type; we need to piggyback on
   # existing types. Matches feat(security), fix(security), test(security),
-  # chore(security).
-  { message = "\\(security\\)", group = "<!-- 3 -->Security" },
+  # chore(security). Anchored to the commit header (`^<type>(security)`)
+  # so an incidental `(security)` mention in a commit body does not
+  # falsely route the commit to the Security section.
+  { message = "^[a-z]+\\(security\\)", group = "<!-- 3 -->Security" },
   { message = "^docs", group = "<!-- 4 -->Documentation" },
   { message = "^test", group = "<!-- 5 -->Miscellaneous" },
   { message = "^chore", skip = true },

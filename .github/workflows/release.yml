@@ -68,13 +68,19 @@ jobs:
         # Revisit when Anthropic publishes a fix that includes both #195 and #204.
         run: npx --yes @anthropic-ai/mcpb pack . dist/parkour-mcp.mcpb
 
-      - name: Extract release notes from CHANGELOG.md
-        # Body source is the hand-reviewed CHANGELOG.md slice for this
-        # version, not commit-subject paraphrase. Keeps the Release body
-        # aligned with the on-disk changelog that towncrier assembled and
-        # the maintainer (and Claude, at /release time) reviewed.
-        run: |
-          uv run python3 scripts/extract_changelog.py "${{ steps.version.outputs.version }}" > release-notes.md
+      - name: Install git-cliff
+        uses: taiki-e/install-action@git-cliff
+
+      - name: Generate release notes from commits
+        # git-cliff is the single source of truth for changelog content
+        # (both local CHANGELOG.md assembly during /release and this CI
+        # step). It reads the [tool.git-cliff] config in pyproject.toml,
+        # walks commits in the current tag's range, extracts `Why:`
+        # trailers via the Tera template, and emits the same Keep a
+        # Changelog section that was prepended to CHANGELOG.md locally.
+        # --strip all removes the # Changelog header / footer so the
+        # output is ready to feed to `gh release create --notes-file`.
+        run: git cliff --current --strip all -o release-notes.md
 
       - name: Create GitHub Release
         env:

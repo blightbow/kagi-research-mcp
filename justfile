@@ -66,10 +66,10 @@ tag version:
     @echo "Tag {{version}} created locally. Push with: git push origin {{version}}"
 
 # Preview the release: show the next version commitizen would cut and the
-# CHANGELOG entry towncrier would render, without writing anything.
+# CHANGELOG entry git-cliff would assemble, without writing anything.
 release-preview:
     @echo "Next version (from commits since last tag):"
     @uv run cz bump --get-next --yes
     @echo ""
     @echo "CHANGELOG.md entry that would be prepended:"
-    @uv run towncrier build --draft --version "$(uv run cz bump --get-next --yes 2>/dev/null)"
+    @git cliff --tag "v$(uv run cz bump --get-next --yes 2>/dev/null)" --unreleased --strip all
