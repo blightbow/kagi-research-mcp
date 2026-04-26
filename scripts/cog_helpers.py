@@ -7,6 +7,7 @@ under ruff/ty/test scope rather than hiding inside HTML-comment markers.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -71,6 +72,40 @@ def _human_align(md_table: str) -> str:
     return "\n".join([new_header, new_sep, *new_data])
 
 
+def render_table_adaptive(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    *,
+    threshold: int = 120,
+) -> str:
+    """Render a GFM table, switching style based on whether rows fit *threshold*.
+
+    Two display modes (matching the boolean axis exposed in
+    ``wooorm/markdown-table`` as ``alignDelimiters``):
+
+    - **Narrow** (max row width <= *threshold*): uniform-padded GFM —
+      tabulate's default.  Closing pipes align vertically; the table
+      reads as a sharp grid.
+    - **Wide** (max row width > *threshold*): internal columns aligned
+      across rows but the last column trimmed to ``<content> |`` per
+      row.  Avoids the wall of trailing whitespace that uniform padding
+      produces when the longest row dominates everyone else's pad.
+
+    The threshold framing was endorsed by ``wooorm`` in
+    ``remarkjs/remark-gfm#46`` ("There are currently two ways to display
+    tables. I can see 'dynamically' switching between them as an
+    improvement.") but never landed upstream.  Default 120 matches the
+    print-width convention shared by Black, JetBrains, and ``glow``.
+    """
+    from tabulate import tabulate
+
+    uniform = tabulate(rows, headers=list(headers), tablefmt="github")
+    max_width = max(len(line) for line in uniform.splitlines())
+    if max_width <= threshold:
+        return uniform
+    return _human_align(uniform)
+
+
 def render_tool_table() -> str:
     """Render the README tool table from ``scripts/tools.toml`` + introspection.
 
@@ -108,8 +143,9 @@ def render_tool_table() -> str:
             ctx["ecosystems_count"] = str(len(ecosystems))
         desc = tool["description"].format(**ctx) if ctx else tool["description"]
         rows.append((tool["name"], tool["pascal"], desc))
-    raw = tabulate(rows, headers=["Tool Name", "Claude Code Tool Name", "Description"], tablefmt="github")
-    return _human_align(raw)
+    return render_table_adaptive(
+        ["Tool Name", "Claude Code Tool Name", "Description"], rows
+    )
 
 
 def protected_keys() -> tuple[str, ...]:
@@ -157,9 +193,8 @@ def protected_keys_table() -> str:
     Key column is derived from FMEntries.PROTECTED_ORDER; the contributors
     column is hand-curated prose in this module (small, rarely-changing).
     """
-    from tabulate import tabulate
     rows = [(f"`{k}`", _FM_KEY_CONTRIBUTORS[k]) for k in protected_keys()]
-    return _human_align(tabulate(rows, headers=["Key", "Typical contributors"], tablefmt="github"))
+    return render_table_adaptive(["Key", "Typical contributors"], rows)
 
 
 def tool_count(*, with_optional: bool = False) -> str:
