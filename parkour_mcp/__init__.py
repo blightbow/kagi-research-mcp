@@ -472,7 +472,7 @@ Query formats:
   Append /videos, /shorts, /streams, /playlists, or /podcasts to list
   the actual entries within that tab.
 - playlist: /playlist?list=...
-- search: free-text query (passed to yt-dlp's ytsearch{N}: routing).
+- search: free-text query (passed to yt-dlp's ytsearch{{N}}: routing).
 
 Transcript actions:
 - Default (no search/windows/range): full transcript in the requested
@@ -489,7 +489,7 @@ Transcript timestamps= modes:
   shape that preserves citation precision while keeping token cost low.
 - absolute: per-line [MM:SS] prefix on every cue.
 - none: flat text with no timing.
-- structured: YAML list of {t, d, text} triples for machine consumers.
+- structured: YAML list of {{t, d, text}} triples for machine consumers.
 
 Auto-generated captions lack punctuation and capitalization; the
 'transcript_kind' field in frontmatter signals which to expect. The
