@@ -663,19 +663,27 @@ class TestTranscriptErrorMapping:
         from youtube_transcript_api import IpBlocked
         err = IpBlocked("vid")
         out = _map_transcript_error(err)
-        assert "IP" in out and "residential proxy" in out.lower()
+        # Acknowledges both paths failed — fallback already attempted
+        assert "IP reputation" in out or "429" in out
+        assert "fallback" in out.lower()
+        assert "residential proxy" in out.lower()
 
     def test_request_blocked(self):
         from youtube_transcript_api import RequestBlocked
         err = RequestBlocked("vid")
         out = _map_transcript_error(err)
         assert "bot" in out.lower()
+        assert "fallback" in out.lower()
 
     def test_po_token_required(self):
         from youtube_transcript_api import PoTokenRequired
         err = PoTokenRequired("vid")
         out = _map_transcript_error(err)
         assert "PoToken" in out
+        # Now points users at the plugin path rather than calling the
+        # fallback "on the roadmap" (which is no longer accurate)
+        assert "plugin" in out.lower()
+        assert "bgutil-ytdlp-pot-provider" in out
 
     def test_transcripts_disabled(self):
         from youtube_transcript_api import TranscriptsDisabled
@@ -2033,6 +2041,42 @@ class TestFallbackInDispatcher:
         )
         assert "api: yt-dlp (fallback)" in result
         assert "transcript_kind: auto" in result
+        # Note must explain both directions of the recovery
+        assert "RequestBlocked" in result
+        assert "android_vr" in result
+
+    @pytest.mark.asyncio
+    async def test_ip_blocked_triggers_fallback_with_caveat(self, monkeypatch):
+        # IpBlocked is a subclass of RequestBlocked; the note should
+        # specifically mention HTTP 429 + the IP-reputation caveat
+        from youtube_transcript_api import IpBlocked
+
+        def fake_fetch_sync(video_id, languages):
+            del languages
+            raise IpBlocked(video_id)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch_sync)
+
+        async def fake_fallback(video_id, languages):
+            del video_id, languages
+            return _yt_module._FallbackTranscript(
+                snippets=tuple([
+                    _yt_module._FallbackSnippet(0.0, 2.0, "Recovered."),
+                ]),
+                language_code="en",
+                is_generated=False,
+            )
+        monkeypatch.setattr(
+            _yt_module, "_yt_dlp_transcript_fallback", fake_fallback,
+        )
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "IpBlocked" in result
+        assert "429" in result
+        # The note should warn that subsequent calls may still hit the wall
+        assert "may hit the same wall" in result.lower() or "IP reputation" in result
 
     @pytest.mark.asyncio
     async def test_fallback_failure_surfaces_original_error(self, monkeypatch):

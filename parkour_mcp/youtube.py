@@ -627,7 +627,7 @@ class _TranscriptEntry:
     __slots__ = (
         "url", "video_id", "language_code", "is_generated",
         "segments", "windows", "chunking_strategy", "group",
-        "fetcher",
+        "fetcher", "fallback_from",
         "_tantivy_index", "_built",
     )
 
@@ -665,6 +665,7 @@ class _TranscriptEntry:
         chunking_strategy: str,
         group: Optional[str] = None,
         fetcher: str = "youtube-transcript-api",
+        fallback_from: Optional[str] = None,
     ):
         self.url = url
         self.video_id = video_id
@@ -675,6 +676,7 @@ class _TranscriptEntry:
         self.chunking_strategy = chunking_strategy
         self.group = group
         self.fetcher = fetcher
+        self.fallback_from = fallback_from
         self._tantivy_index = None
         self._built = False
 
@@ -890,6 +892,13 @@ def _map_transcript_error(exc: Exception) -> str:
 
     Order matters: more-specific subclasses are checked before their
     superclasses (``IpBlocked`` before ``RequestBlocked``).
+
+    For the three exceptions that trigger the yt-dlp fallback
+    (``IpBlocked``, ``RequestBlocked``, ``PoTokenRequired``), this
+    function is reached only after the fallback ALSO failed. The
+    messages for those cases acknowledge both paths hit the wall so
+    the LLM caller doesn't try the obvious "use yt-dlp instead" angle
+    we already exhausted.
     """
     try:
         from youtube_transcript_api import (
@@ -909,21 +918,27 @@ def _map_transcript_error(exc: Exception) -> str:
 
     if isinstance(exc, IpBlocked):
         return (
-            "Error: YouTube blocked the transcript request based on IP "
-            "reputation. If running from a cloud IP (AWS/GCP/Azure/etc.), "
+            "Error: YouTube blocked based on IP reputation (HTTP 429). "
+            "Both youtube-transcript-api and the yt-dlp fallback hit the "
+            "same wall. If running from a cloud IP (AWS/GCP/Azure/etc.), "
             "configure HTTPS_PROXY to a residential proxy."
         )
     if isinstance(exc, RequestBlocked):
         return (
             "Error: YouTube blocked the transcript request as suspected "
-            "bot traffic. Retry shortly, or configure HTTPS_PROXY to a "
-            "residential proxy if blocks persist."
+            "bot traffic (LOGIN_REQUIRED + BOT_DETECTED on the Innertube "
+            "endpoint). Both youtube-transcript-api and the yt-dlp "
+            "fallback hit the same wall. Retry shortly, or configure "
+            "HTTPS_PROXY to a residential proxy if blocks persist."
         )
     if isinstance(exc, PoTokenRequired):
         return (
-            "Error: This video's captions require a Botguard PoToken; "
-            "youtube-transcript-api has no current workaround. A yt-dlp "
-            "fallback path is on the roadmap."
+            "Error: This video's captions require a Botguard PoToken "
+            "(xpe/xpv experiment on the caption URL). "
+            "youtube-transcript-api can't generate one, and the yt-dlp "
+            "fallback also failed without a PoToken provider plugin "
+            "(bgutil-ytdlp-pot-provider or similar). Install a provider "
+            "plugin or wait for the experiment to roll back."
         )
     if isinstance(exc, TranscriptsDisabled):
         return "Error: The uploader has disabled transcripts for this video."
@@ -1100,6 +1115,7 @@ def _build_transcript_entry(
     video_id: str,
     fetched,
     fetcher: str = "youtube-transcript-api",
+    fallback_from: Optional[str] = None,
 ) -> _TranscriptEntry:
     """Construct an entry from a fetched-transcript object.
 
@@ -1139,12 +1155,46 @@ def _build_transcript_entry(
         chunking_strategy=chunking_strategy,
         group=f"yt:{video_id}",
         fetcher=fetcher,
+        fallback_from=fallback_from,
     )
 
 
+# When the yt-dlp fallback path recovers from a youtube-transcript-api
+# exception, the response has to convey two things to the LLM caller: which
+# exception was originally raised (so the caller can recognize the same
+# condition next time) and what the fallback did to bypass it (so the
+# caller can reason about why recovery was possible at all). The LLM has
+# minimal visibility into the code path; the note is its only window.
+_FALLBACK_NOTES: dict[str, str] = {
+    "RequestBlocked": (
+        "youtube-transcript-api raised RequestBlocked (its fixed Innertube "
+        "ANDROID client got the LOGIN_REQUIRED + BOT_DETECTED wall); "
+        "recovered via yt-dlp's android_vr client, which presents a "
+        "different request fingerprint (Oculus Quest 3 UA, no JS player)."
+    ),
+    "IpBlocked": (
+        "youtube-transcript-api raised IpBlocked (HTTP 429 from the "
+        "Innertube endpoint); recovered via yt-dlp's android_vr client "
+        "with a different request fingerprint. The IP reputation likely "
+        "still applies — repeated calls may hit the same wall."
+    ),
+    "PoTokenRequired": (
+        "youtube-transcript-api raised PoTokenRequired (xpe/xpv experiment "
+        "flag on the caption URL); recovered via yt-dlp with a PoToken "
+        "provider plugin generating the required Botguard token."
+    ),
+}
+
+
 def _base_transcript_fm(entry: _TranscriptEntry) -> FMEntries:
-    """Build the frontmatter fields shared across all transcript responses."""
-    return FMEntries({
+    """Build the frontmatter fields shared across all transcript responses.
+
+    When the entry was produced via the yt-dlp fallback path, append a
+    ``note:`` describing both the original failure and the recovery
+    mechanism. The note is the LLM's only window into a code path it
+    can't directly inspect.
+    """
+    fm = FMEntries({
         "source": entry.url,
         "api": entry.fetcher,
         "video_id": entry.video_id,
@@ -1154,6 +1204,15 @@ def _base_transcript_fm(entry: _TranscriptEntry) -> FMEntries:
         "chunking_strategy": entry.chunking_strategy,
         "trust": _TRUST_ADVISORY,
     })
+    if entry.fallback_from:
+        note = _FALLBACK_NOTES.get(entry.fallback_from)
+        if note is None:
+            note = (
+                f"youtube-transcript-api raised {entry.fallback_from}; "
+                "recovered via yt-dlp's caption path."
+            )
+        fm.append("note", note)
+    return fm
 
 
 def _render_full_transcript_response(
@@ -1299,6 +1358,7 @@ async def _transcript(
     entry = _transcript_cache.get(canonical_url)
     if entry is None:
         fetcher_name = "youtube-transcript-api"
+        fallback_from: Optional[str] = None
         try:
             fetched = await asyncio.to_thread(
                 _fetch_transcript_sync, video_id, languages,
@@ -1320,12 +1380,15 @@ async def _transcript(
                 if fetched is None:
                     return _map_transcript_error(exc)
                 fetcher_name = "yt-dlp (fallback)"
+                fallback_from = type(exc).__name__
             else:
                 return _map_transcript_error(exc)
         if not list(fetched.snippets):
             return "Error: Transcript fetched but contains no segments."
         entry = _build_transcript_entry(
-            canonical_url, video_id, fetched, fetcher=fetcher_name,
+            canonical_url, video_id, fetched,
+            fetcher=fetcher_name,
+            fallback_from=fallback_from,
         )
         _transcript_cache.store(canonical_url, entry)
 

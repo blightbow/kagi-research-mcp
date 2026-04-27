@@ -254,6 +254,50 @@ Mocks: continue using `_FakeFetchedTranscript` from step 2; extend with
 multi-window fixtures sized to exercise the coalescer's window
 boundaries (e.g. ~120s of segments producing 3-4 windows).
 
+## When the yt-dlp fallback helps
+
+The transcript action tries `youtube-transcript-api` first and falls
+back to yt-dlp's caption code path on `RequestBlocked`, `IpBlocked`,
+or `PoTokenRequired`. The two paths hit the same Innertube endpoint
+chain (`watch-page` → `youtubei/v1/player` → `captionTracks[].baseUrl`)
+but with materially different request fingerprints, and the fallback's
+recovery rate depends on which exception triggered it.
+
+### youtube-transcript-api 1.x (per `_settings.py`, `_transcripts.py`)
+
+- Single fixed Innertube client: `ANDROID 20.10.38`.
+- Default `requests` Session with only `Accept-Language: en-US`. User-Agent
+  is the bare `python-requests/X.Y.Z` default — no browser or device spoof.
+- `PoTokenRequired` is a reactive substring check
+  (`if "&exp=xpe" in url:`) — no token generation, no JS engine.
+- No multi-client retry. If the player call returns
+  `LOGIN_REQUIRED + BOT_DETECTED`, raises `RequestBlocked` and stops.
+
+### yt-dlp (per `_video.py`, `_base.py`)
+
+- Multi-client rotation. Default is `android_vr,web_safari`.
+- `android_vr` impersonates Oculus Quest 3:
+  `com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android
+  12L; eureka-user Build/SQ3A.220605.009.A1) gzip`. JS-less,
+  `SUBS_PO_TOKEN_POLICY` defaults to `required=False` for this client.
+- Detects both `xpe` and `xpv` PoToken experiments on caption URLs.
+  When required and unavailable, skips that client's subs and tries
+  the next. With a PoToken provider plugin (`bgutil-ytdlp-pot-provider`
+  or similar): generates the Botguard token, succeeds.
+- Optional `curl_cffi` impersonation defeats TLS fingerprinting.
+
+### Recovery probabilities
+
+| Exception | Cause | Fallback recovery |
+|---|---|---|
+| `RequestBlocked` | Bot-detection on transcript-api's plain `python-requests` UA + ANDROID client | **Likely**. yt-dlp's android_vr client + Quest 3 UA presents a different fingerprint and typically passes where transcript-api fails. |
+| `IpBlocked` | HTTP 429 from the Innertube endpoint | **Possible**. Different request fingerprint helps, but the IP reputation persists; subsequent calls may hit the same wall. |
+| `PoTokenRequired` | `xpe`/`xpv` experiment on the caption URL | **Only with a PoToken provider plugin installed.** yt-dlp without a plugin is in the same boat as transcript-api — it detects the same experiment and skips that client's subs. |
+
+The `_FALLBACK_NOTES` map in `youtube.py` carries a short explanation
+of each recovery path into the response frontmatter so the LLM caller
+sees what was bypassed and why recovery was possible at all.
+
 ## Deferred to follow-up commits
 
 - **Chapter integration**. Needs a yt-dlp metadata fetch alongside the
