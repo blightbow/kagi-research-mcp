@@ -1,4 +1,4 @@
-"""Tests for parkour_mcp.youtube module (step 1: video action only)."""
+"""Tests for parkour_mcp.youtube module."""
 
 import sys
 
@@ -8,11 +8,20 @@ import parkour_mcp.youtube  # noqa: F401
 _yt_module = sys.modules["parkour_mcp.youtube"]
 
 from parkour_mcp.youtube import (  # noqa: E402
+    Segment,
+    Window,
     _captions_summary,
+    _detect_outlier_gaps,
     _detect_youtube_url,
     _format_duration,
     _format_upload_date,
+    _map_transcript_error,
     _map_yt_dlp_error,
+    _mmss,
+    _punctuation_density,
+    _segment_ends_sentence,
+    coalesce_windows,
+    render_transcript,
     youtube,
 )
 
@@ -367,3 +376,520 @@ class TestVideoAction:
             url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
         )
         assert "captions_auto_only: True" in result
+
+
+# ---------------------------------------------------------------------------
+# Transcript: helpers
+# ---------------------------------------------------------------------------
+
+class TestTranscriptHelpers:
+    def test_mmss_under_minute(self):
+        assert _mmss(19) == "00:19"
+
+    def test_mmss_under_hour(self):
+        assert _mmss(125) == "02:05"
+
+    def test_mmss_over_hour(self):
+        assert _mmss(3725) == "01:02:05"
+
+    def test_punctuation_density_punctuated(self):
+        segs = [
+            Segment(0, 2, "Hello there. How are you?"),
+            Segment(2, 2, "I am well. Thanks!"),
+        ]
+        d = _punctuation_density(segs)
+        # 4 enders, 9 words → ~0.44
+        assert d > 0.3
+
+    def test_punctuation_density_unpunctuated(self):
+        segs = [
+            Segment(0, 2, "all right so here we are in front of"),
+            Segment(2, 2, "the elephants the cool thing about these"),
+        ]
+        d = _punctuation_density(segs)
+        assert d == 0.0
+
+    def test_punctuation_density_empty(self):
+        assert _punctuation_density([]) == 0.0
+
+    def test_segment_ends_sentence_period(self):
+        assert _segment_ends_sentence(Segment(0, 1, "Hello world.")) is True
+
+    def test_segment_ends_sentence_no(self):
+        assert _segment_ends_sentence(Segment(0, 1, "Hello world")) is False
+
+    def test_segment_ends_sentence_trailing_whitespace(self):
+        # Trailing whitespace shouldn't fool the detector
+        assert _segment_ends_sentence(Segment(0, 1, "Hello world. ")) is True
+
+    def test_segment_ends_sentence_empty(self):
+        assert _segment_ends_sentence(Segment(0, 1, "")) is False
+
+
+# ---------------------------------------------------------------------------
+# Outlier gap detection
+# ---------------------------------------------------------------------------
+
+class TestOutlierGaps:
+    def test_empty(self):
+        assert _detect_outlier_gaps([]) == []
+
+    def test_single(self):
+        assert _detect_outlier_gaps([Segment(0, 1, "a")]) == [False]
+
+    def test_short_with_outlier_uses_fallback(self):
+        # 3 segments → 2 gaps. Below the rolling-window threshold, so the
+        # 3.0s fixed fallback applies.
+        segs = [
+            Segment(0, 1, "a"),     # ends at 1
+            Segment(2, 1, "b"),     # gap=1.0 — under fallback
+            Segment(8, 1, "c"),     # gap=5.0 — over fallback
+        ]
+        out = _detect_outlier_gaps(segs)
+        assert out == [False, True, False]
+
+    def test_long_with_outlier_uses_rolling(self):
+        # 12 segments at steady 1s gaps + one ~5s outlier gap. The rolling
+        # median is ~1.0, threshold = max(2*1, 1.5) = 2.0; the 5s gap
+        # crosses, the 1s gaps don't.
+        segs: list[Segment] = []
+        t = 0.0
+        for i in range(11):
+            segs.append(Segment(t, 1.0, f"seg{i}"))
+            t = t + 1.0 + 1.0  # 1s segment + 1s gap
+        # Inject outlier: bump next segment's start so gap is ~5s
+        segs.append(Segment(t + 4.0, 1.0, "outlier"))
+        out = _detect_outlier_gaps(segs)
+        # Last in-gap position before outlier should flag
+        assert out[-2] is True
+        # Steady-cadence positions should not flag
+        assert all(o is False for o in out[:-2])
+        assert out[-1] is False
+
+    def test_floor_blocks_tiny_outliers(self):
+        # All gaps <0.5s; nothing should flag even though some are 4× the median
+        segs = [
+            Segment(0, 0.1, "a"),   # ends 0.1
+            Segment(0.2, 0.1, "b"), # gap 0.1
+            Segment(0.3, 0.1, "c"), # gap 0.0
+            Segment(0.5, 0.1, "d"), # gap 0.1 — but tiny, under 1.5 floor
+        ]
+        out = _detect_outlier_gaps(segs)
+        assert all(o is False for o in out)
+
+
+# ---------------------------------------------------------------------------
+# Window coalescer
+# ---------------------------------------------------------------------------
+
+def _make_segments(spec: list[tuple[float, float, str]]) -> list[Segment]:
+    """Helper: build segments from (start, duration, text) tuples."""
+    return [Segment(s, d, t) for s, d, t in spec]
+
+
+class TestCoalesceWindows:
+    def test_empty(self):
+        assert coalesce_windows([], sentence_aware=False) == []
+
+    def test_short_input_one_window(self):
+        # Total duration < min — everything goes in one window
+        segs = _make_segments([
+            (0, 2, "a"),
+            (2, 2, "b"),
+            (4, 2, "c"),
+        ])
+        windows = coalesce_windows(segs, sentence_aware=False)
+        assert len(windows) == 1
+        assert windows[0].start == 0
+        assert windows[0].end == 6
+        assert len(windows[0].segments) == 3
+
+    def test_max_duration_forces_cut(self):
+        # 8 segments × 5s each = 40s total, max is 35s. Should cut.
+        segs = _make_segments([(i * 5.0, 5.0, f"s{i}") for i in range(8)])
+        windows = coalesce_windows(segs, sentence_aware=False)
+        assert len(windows) >= 2
+        # All windows must respect max duration
+        for w in windows:
+            assert (w.end - w.start) <= 35.0 + 0.01  # tiny float slack
+
+    def test_pause_boundary_triggers_cut_in_band(self):
+        # 6 segments × 5s reaching 30s, then a 3s pause, then more segments.
+        # The pause should cut once we're in the [25, 35] band.
+        segs = _make_segments([
+            (0, 5, "a"),
+            (5, 5, "b"),
+            (10, 5, "c"),
+            (15, 5, "d"),
+            (20, 5, "e"),
+            (25, 5, "f"),  # ends at 30
+            # 3s gap
+            (33, 5, "g"),
+            (38, 5, "h"),
+        ])
+        windows = coalesce_windows(segs, sentence_aware=False)
+        # Expect the cut at the pause
+        assert len(windows) == 2
+        assert windows[0].segments[-1].text == "f"
+        assert windows[1].segments[0].text == "g"
+
+    def test_no_pause_runs_to_max(self):
+        # No pauses at all → cut at max
+        segs = _make_segments([(i * 4.0, 4.0, f"s{i}") for i in range(15)])
+        windows = coalesce_windows(segs, sentence_aware=False)
+        for w in windows:
+            assert (w.end - w.start) <= 35.0 + 0.01
+
+    def test_sentence_aware_cuts_at_period(self):
+        # 5 segments × 6s. After the third, the text ends with a period.
+        # In sentence-aware mode, that should cut even without a pause.
+        segs = _make_segments([
+            (0, 6, "first"),     # ends 6
+            (6, 6, "second"),    # ends 12
+            (12, 6, "third."),   # ends 18, but in band? 18 < 25 — no cut yet
+            (18, 6, "fourth"),   # ends 24, still < 25 — no cut yet
+            (24, 6, "fifth."),   # ends 30 — IN band, sentence end → cut
+            (30, 6, "sixth"),    # next window
+        ])
+        windows = coalesce_windows(segs, sentence_aware=True)
+        assert len(windows) == 2
+        assert windows[0].segments[-1].text == "fifth."
+        assert windows[1].segments[0].text == "sixth"
+
+    def test_sentence_aware_off_uses_pause_only(self):
+        # Same input but sentence_aware=False — the sentence break shouldn't
+        # cut; we'd need a pause boundary to cut. With contiguous timing,
+        # that means everything stays in one window (or hits max).
+        segs = _make_segments([
+            (0, 6, "first"),
+            (6, 6, "second."),
+            (12, 6, "third"),
+            (18, 6, "fourth."),
+        ])
+        windows = coalesce_windows(segs, sentence_aware=False)
+        # No pauses, no max breach (24s) → one window
+        assert len(windows) == 1
+
+
+# ---------------------------------------------------------------------------
+# Renderers
+# ---------------------------------------------------------------------------
+
+class TestRenderTranscript:
+    @staticmethod
+    def _windows() -> list[Window]:
+        # Modeled after "Me at the zoo"
+        segs = [
+            Segment(1.20, 2.16, "All right, so here we are, in front of the elephants"),
+            Segment(5.32, 2.66, "the cool thing about these guys is that they have really..."),
+            Segment(7.97, 4.64, "really really long trunks"),
+            Segment(12.62, 1.75, "and that's cool"),
+            Segment(14.42, 1.31, "(baaaaaaaaaaahhh!!)"),
+            Segment(16.88, 2.00, "and that's pretty much all there is to say"),
+        ]
+        return [Window(start=segs[0].start, end=segs[-1].end, segments=tuple(segs))]
+
+    def test_none_mode_flat_text(self):
+        out = render_transcript(self._windows(), mode="none")
+        assert "[" not in out
+        assert "All right, so here we are" in out
+        assert "all there is to say" in out
+
+    def test_absolute_mode_per_line_timestamps(self):
+        out = render_transcript(self._windows(), mode="absolute")
+        assert "[00:01]" in out
+        assert "[00:05]" in out
+        assert "[00:16]" in out
+        assert "All right, so here we are" in out
+
+    def test_compact_mode_single_window_anchor(self):
+        out = render_transcript(self._windows(), mode="compact")
+        # Window anchor present
+        assert "[00:01]" in out
+        # Each segment on its own line
+        assert "All right, so here we are, in front of the elephants" in out
+        assert "(baaaaaaaaaaahhh!!)" in out
+        # Compact mode emits one anchor (window start), not per-line
+        assert out.count("[00:") == 1 or out.count("[00:") <= 2
+
+    def test_compact_mode_multi_window_anchors(self):
+        # Two windows with a clear gap between
+        segs1 = [Segment(i * 5.0, 5.0, f"win1 seg{i}") for i in range(6)]
+        segs2 = [Segment(35.0 + i * 5.0, 5.0, f"win2 seg{i}") for i in range(4)]
+        windows = [
+            Window(0, 30, tuple(segs1)),
+            Window(35, 55, tuple(segs2)),
+        ]
+        out = render_transcript(windows, mode="compact")
+        assert "[00:00]" in out
+        assert "[00:35]" in out
+
+    def test_structured_mode_yaml(self):
+        out = render_transcript(self._windows(), mode="structured")
+        # Should be parseable YAML
+        import yaml
+        data = yaml.safe_load(out)
+        assert isinstance(data, list)
+        assert len(data) == 6
+        assert data[0]["t"] == 1.2
+        assert "elephants" in data[0]["text"]
+
+    def test_empty_windows(self):
+        assert render_transcript([], mode="compact") == ""
+        assert render_transcript([], mode="none") == ""
+        assert render_transcript([], mode="absolute") == ""
+
+
+# ---------------------------------------------------------------------------
+# Transcript error mapping
+# ---------------------------------------------------------------------------
+
+class TestTranscriptErrorMapping:
+    def test_ip_blocked(self):
+        from youtube_transcript_api import IpBlocked
+        err = IpBlocked("vid")
+        out = _map_transcript_error(err)
+        assert "IP" in out and "residential proxy" in out.lower()
+
+    def test_request_blocked(self):
+        from youtube_transcript_api import RequestBlocked
+        err = RequestBlocked("vid")
+        out = _map_transcript_error(err)
+        assert "bot" in out.lower()
+
+    def test_po_token_required(self):
+        from youtube_transcript_api import PoTokenRequired
+        err = PoTokenRequired("vid")
+        out = _map_transcript_error(err)
+        assert "PoToken" in out
+
+    def test_transcripts_disabled(self):
+        from youtube_transcript_api import TranscriptsDisabled
+        err = TranscriptsDisabled("vid")
+        out = _map_transcript_error(err)
+        assert "disabled" in out.lower()
+
+    def test_no_transcript_found(self):
+        from youtube_transcript_api import NoTranscriptFound
+        # NoTranscriptFound has a specific signature; pass minimal args
+        err = NoTranscriptFound("vid", ["en"], None)
+        out = _map_transcript_error(err)
+        assert "no transcript" in out.lower()
+
+    def test_video_unavailable(self):
+        from youtube_transcript_api import VideoUnavailable
+        err = VideoUnavailable("vid")
+        out = _map_transcript_error(err)
+        assert "unavailable" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# _transcript action
+# ---------------------------------------------------------------------------
+
+class _FakeFetchedTranscript:
+    """Stand-in for youtube-transcript-api's FetchedTranscript."""
+
+    def __init__(self, snippets, language_code="en", is_generated=False):
+        self.snippets = snippets
+        self.language = "English"
+        self.language_code = language_code
+        self.is_generated = is_generated
+        self.video_id = "fake"
+
+
+class _FakeSnippet:
+    """Stand-in for FetchedTranscriptSnippet (simple value object)."""
+    def __init__(self, start, duration, text):
+        self.start = start
+        self.duration = duration
+        self.text = text
+
+
+# Modeled on "Me at the zoo" — manual captions, punctuated.
+_ZOO_SNIPPETS = [
+    _FakeSnippet(1.20, 2.16, "All right, so here we are, in front of the elephants"),
+    _FakeSnippet(5.32, 2.66, "the cool thing about these guys is that they have really..."),
+    _FakeSnippet(7.97, 4.64, "really really long trunks"),
+    _FakeSnippet(12.62, 1.75, "and that's cool"),
+    _FakeSnippet(14.42, 1.31, "(baaaaaaaaaaahhh!!)"),
+    _FakeSnippet(16.88, 2.00, "and that's pretty much all there is to say"),
+]
+
+# Auto-caption shape: lowercase, no punctuation.
+_AUTO_SNIPPETS = [
+    _FakeSnippet(0.0, 3.0, "all right so here we are in front of the"),
+    _FakeSnippet(3.0, 3.0, "elephants the cool thing about these guys is"),
+    _FakeSnippet(6.0, 3.0, "that they have really really really long trunks"),
+    _FakeSnippet(9.0, 3.0, "and that's cool"),
+]
+
+
+class TestTranscriptAction:
+    @pytest.mark.asyncio
+    async def test_punctuated_returns_compact_default(self, monkeypatch):
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(_ZOO_SNIPPETS, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "transcript_kind: manual" in result
+        assert "transcript_language: en" in result
+        assert "All right, so here we are, in front of the elephants" in result
+        assert "untrusted content" in result
+
+    @pytest.mark.asyncio
+    async def test_auto_caption_uses_time_window(self, monkeypatch):
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(_AUTO_SNIPPETS, "en", is_generated=True)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "transcript_kind: auto" in result
+        assert "chunking_strategy: time_window" in result
+
+    @pytest.mark.asyncio
+    async def test_punctuated_uses_sentence_strategy(self, monkeypatch):
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(_ZOO_SNIPPETS, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        # Density of _ZOO_SNIPPETS is high (commas/periods/exclam) so sentence-aware
+        assert "chunking_strategy: sentence" in result
+
+    @pytest.mark.asyncio
+    async def test_timestamps_absolute_mode(self, monkeypatch):
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(_ZOO_SNIPPETS, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            timestamps="absolute",
+        )
+        # Absolute mode emits a per-line [MM:SS]
+        assert "[00:01]" in result
+        assert "[00:05]" in result
+
+    @pytest.mark.asyncio
+    async def test_timestamps_none_mode(self, monkeypatch):
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(_ZOO_SNIPPETS, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            timestamps="none",
+        )
+        # No bracketed timestamps in the body
+        body_start = result.index("\n\n") + 2
+        body = result[body_start:]
+        # `[` only appears in fence markers and (baaaaa...!!) lines
+        # Specifically, no [00:NN] timestamps
+        import re as _re
+        assert _re.search(r"\[\d+:\d+\]", body) is None
+
+    @pytest.mark.asyncio
+    async def test_no_url(self):
+        result = await youtube(action="transcript")
+        assert "Error" in result and "url" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_youtube_url(self):
+        result = await youtube(
+            action="transcript",
+            url="https://example.com/video",
+        )
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_channel_url_rejected(self):
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/@somechan",
+        )
+        assert "Error" in result and "channel" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_transcripts_disabled_propagates(self, monkeypatch):
+        from youtube_transcript_api import TranscriptsDisabled
+
+        def fake_fetch(video_id, languages):
+            del languages
+            raise TranscriptsDisabled(video_id)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "Error" in result
+        assert "disabled" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_request_blocked_propagates(self, monkeypatch):
+        from youtube_transcript_api import RequestBlocked
+
+        def fake_fetch(video_id, languages):
+            del languages
+            raise RequestBlocked(video_id)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "Error" in result
+        assert "bot" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_normalizes_embedded_newlines(self, monkeypatch):
+        # YouTube caption cues frequently contain embedded \n for display
+        # wrapping. Each segment must render as one coherent line.
+        snippets = [
+            _FakeSnippet(0.0, 2.0, "First line of\ncaption"),
+            _FakeSnippet(2.0, 2.0, "Second  \n  line\nhere"),
+        ]
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "First line of caption" in result
+        assert "Second line here" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_snippets_handled(self, monkeypatch):
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript([], "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "Error" in result
+        assert "no segments" in result.lower()

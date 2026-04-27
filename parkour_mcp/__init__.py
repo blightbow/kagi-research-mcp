@@ -450,24 +450,40 @@ The shelf survives context compaction within the same session. For cross-session
 persistence, use export json to save the shelf to a memory file, then import
 it in a future session.""",
 
-    "youtube": """Fetch YouTube content via yt-dlp's unofficial extraction.
+    "youtube": """Fetch YouTube video content and captions via yt-dlp and youtube-transcript-api.
 
-Use this for YouTube video lookups when {fetch_direct} doesn't apply: get
-structured metadata (title, channel, duration, view count, upload date,
-caption availability) plus the video description for a single video URL.
+Use this for YouTube video lookups when {fetch_direct} doesn't apply:
+structured metadata + description, or a rendered caption transcript with
+timing.
 
-Actions: video.
+Actions: video, transcript.
 
 Query formats:
 - video: full YouTube URL (watch?v=, youtu.be/, shorts/, clip/, embed/, or v/)
+- transcript: same URL formats; combine with languages= and timestamps=
 
-Channel, playlist, transcript, and search actions are forthcoming. Music URLs
+Transcript timestamps= modes:
+- compact (default): sparse anchors at ~30s windows plus inline markers for
+  unusually long pauses; each source caption cue on its own line. Hybrid
+  shape that preserves citation precision while keeping token cost low.
+- absolute: per-line [MM:SS] prefix on every cue. Use when the caller needs
+  to cite specific moments without relying on window anchors.
+- none: flat text with no timing. Use for downstream summarization where
+  timing is irrelevant.
+- structured: YAML list of {t, d, text} triples. Use for programmatic
+  consumption.
+
+Auto-generated captions lack punctuation and capitalization; the
+'transcript_kind' field in frontmatter signals which to expect. The
+chunking strategy adapts: punctuated input gets sentence-aware window cuts;
+unpunctuated input falls back to pause-aware time windows.
+
+Channel, playlist, and search actions are forthcoming. Music URLs
 (music.youtube.com) are out of scope and will be handled by a sibling tool.
 
-No authentication required. May fail with bot-detection errors on cloud IPs
-or under sustained request volume; residential connections fare best. The
-fallback workaround when blocked is to set HTTPS_PROXY to a residential
-proxy endpoint.""",
+No authentication required. May fail with bot-detection or PoTokenRequired
+errors; residential connections fare best. The fallback workaround when
+blocked is to set HTTPS_PROXY to a residential proxy endpoint.""",
 
     "mediawiki": """Search and retrieve content from Wikipedia and other MediaWiki sites.
 
