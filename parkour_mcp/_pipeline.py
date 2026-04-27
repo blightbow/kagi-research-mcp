@@ -518,7 +518,10 @@ class _PageCache:
         """Evict one entry, preferring probation over protected.
 
         Group-aware: if the victim has a group tag, all entries sharing
-        that group are evicted together from both queues.
+        that group evict together. Group eviction crosses caches via
+        ``_evict_group`` so sibling caches (e.g. ``_TranscriptCache``)
+        sharing the same group key drop their corresponding entries
+        atomically.
         """
         # Prefer evicting from probation (cheap one-hit pages)
         victim_queue = self._probation if self._probation else self._protected
@@ -529,17 +532,30 @@ class _PageCache:
         oldest = victim_queue[oldest_url]
 
         if oldest.group is not None:
-            group = oldest.group
-            evicted: list[str] = []
-            for q in (self._probation, self._protected):
-                to_remove = [u for u, e in q.items() if e.group == group]
-                for u in to_remove:
-                    evicted.append(u)
-                    del q[u]
-            logger.debug("cache evict group %s: %s", group, evicted)
+            # Evict this cache's matching entries first so the caller's
+            # eviction loop makes progress even when ``self`` is not in
+            # ``_group_caches`` (e.g. test-local cache instances), then
+            # fan out to other registered caches for cross-cache atomicity.
+            self._evict_group_local(oldest.group)
+            _evict_group(oldest.group)
         else:
             logger.debug("cache evict %s (~%s)", oldest_url, _fmt_bytes(oldest.estimated_bytes))
             del victim_queue[oldest_url]
+
+    def _evict_group_local(self, group_key: str) -> list[str]:
+        """Evict every entry tagged with ``group_key`` from both queues.
+
+        Returns the list of evicted URLs for diagnostic logging. Called
+        by ``_evict_group`` after identifying the cross-cache victim
+        set; should not be called directly by other code.
+        """
+        evicted: list[str] = []
+        for q in (self._probation, self._protected):
+            to_remove = [u for u, e in q.items() if e.group == group_key]
+            for u in to_remove:
+                evicted.append(u)
+                del q[u]
+        return evicted
 
     def clear(self):
         """Evict all entries from both queues."""
@@ -547,7 +563,43 @@ class _PageCache:
         self._protected.clear()
 
 
+# ---------------------------------------------------------------------------
+# Cross-cache group eviction
+# ---------------------------------------------------------------------------
+# Multiple cache instances may hold entries that conceptually belong to the
+# same source (e.g. a video's metadata in ``_PageCache`` and its transcript
+# in ``_TranscriptCache``). Group-tagged entries should evict together so
+# the two representations of one source remain coherent. Caches register
+# themselves with this module so any cache's eviction path can fan out to
+# every registered cache.
+
+_group_caches: list = []
+
+
+def register_group_cache(cache) -> None:
+    """Register a cache with the cross-cache group-eviction registry.
+
+    The cache must implement ``_evict_group_local(group_key)``, which
+    walks its own internal queues and removes every entry tagged with
+    the supplied group key.
+    """
+    if cache not in _group_caches:
+        _group_caches.append(cache)
+
+
+def _evict_group(group_key: str) -> None:
+    """Evict every entry sharing ``group_key`` across all registered caches."""
+    for cache in _group_caches:
+        evicted = cache._evict_group_local(group_key)
+        if evicted:
+            logger.debug(
+                "cache evict group %s from %s: %s",
+                group_key, type(cache).__name__, evicted,
+            )
+
+
 _page_cache = _PageCache()
+register_group_cache(_page_cache)
 
 
 async def _cached_mediawiki_fetch(url: str) -> tuple[Optional[dict], Optional[dict]]:

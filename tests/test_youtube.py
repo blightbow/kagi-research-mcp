@@ -3,9 +3,23 @@
 import sys
 
 import pytest
+import tantivy
 
 import parkour_mcp.youtube  # noqa: F401
 _yt_module = sys.modules["parkour_mcp.youtube"]
+
+
+@pytest.fixture(autouse=True)
+def _clear_transcript_cache():
+    """Reset the module-level transcript cache between tests.
+
+    Without this, fake-fetch tests using the same URL would silently
+    cache-hit the entry created by an earlier test, never invoking the
+    monkeypatched fetcher.
+    """
+    _yt_module._transcript_cache.clear()
+    yield
+    _yt_module._transcript_cache.clear()
 
 from parkour_mcp.youtube import (  # noqa: E402
     Segment,
@@ -893,3 +907,519 @@ class TestTranscriptAction:
         )
         assert "Error" in result
         assert "no segments" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# _TranscriptCache and _TranscriptEntry
+# ---------------------------------------------------------------------------
+
+def _multi_window_snippets(n_windows: int = 3, per_window: int = 6) -> list:
+    """Build snippets that should coalesce into approximately n_windows.
+
+    Each window covers ~30s with ``per_window`` segments of ~5s each, so
+    the coalescer's [25s, 35s] band cuts cleanly between windows.
+    """
+    snippets = []
+    t = 0.0
+    for w in range(n_windows):
+        for i in range(per_window):
+            snippets.append(_FakeSnippet(
+                t, 5.0,
+                f"window {w} segment {i}: keyword{w}_{i} the rest is filler.",
+            ))
+            t += 5.0
+        # Big gap between windows to force a clean cut
+        t += 2.0
+    return snippets
+
+
+def _build_entry(language_code="en", is_generated=False, snippets=None):
+    """Construct a _TranscriptEntry directly from snippets, bypassing the cache."""
+    if snippets is None:
+        snippets = _multi_window_snippets()
+    fetched = _FakeFetchedTranscript(snippets, language_code, is_generated)
+    return _yt_module._build_transcript_entry(
+        canonical_url="https://www.youtube.com/watch?v=test",
+        video_id="test",
+        fetched=fetched,
+    )
+
+
+class TestTranscriptCache:
+    def test_store_and_get_promotes(self):
+        cache = _yt_module._TranscriptCache(max_entries=4)
+        entry = _build_entry()
+        cache.store(entry.url, entry)
+        # First get promotes from probation to protected
+        assert cache.get(entry.url) is entry
+        # Probation should now be empty for this URL
+        assert entry.url not in cache._probation
+        assert entry.url in cache._protected
+
+    def test_store_replaces_in_place(self):
+        cache = _yt_module._TranscriptCache(max_entries=4)
+        e1 = _build_entry()
+        cache.store(e1.url, e1)
+        e2 = _build_entry()  # Different instance, same URL
+        cache.store(e1.url, e2)
+        # No eviction triggered, still single entry
+        assert cache._total() == 1
+        assert cache.get(e1.url) is e2
+
+    def test_eviction_prefers_probation(self):
+        cache = _yt_module._TranscriptCache(max_entries=2)
+        # Disable the group key so this test isolates the queue-priority
+        # logic from group-eviction behavior (which is exercised separately
+        # in TestCrossCacheGroupEviction).
+        e1 = _build_entry()
+        e1.url = "url_a"
+        e1.group = None
+        cache.store("url_a", e1)
+        cache.get("url_a")  # promote
+        e2 = _build_entry()
+        e2.group = None
+        cache.store("url_b", e2)
+        e3 = _build_entry()
+        e3.group = None
+        cache.store("url_c", e3)
+        assert "url_a" in cache._protected
+        assert "url_b" not in cache._probation
+        assert "url_b" not in cache._protected
+        assert "url_c" in cache._probation
+
+    def test_group_eviction_takes_protected_too(self):
+        # When a probation victim has a group, ALL entries sharing that
+        # group evict — including protected ones. This is the documented
+        # atomicity guarantee for grouped sources.
+        cache = _yt_module._TranscriptCache(max_entries=2)
+        e1 = _build_entry()
+        e1.url = "url_a"  # group = "yt:test"
+        cache.store("url_a", e1)
+        cache.get("url_a")  # promote to protected
+        e2 = _build_entry()
+        cache.store("url_b", e2)  # probation, same group
+        e3 = _build_entry()
+        cache.store("url_c", e3)  # triggers eviction; url_b is victim
+        # Both url_a and url_b should evict because they share the group
+        assert "url_a" not in cache._protected
+        assert "url_b" not in cache._probation
+        assert "url_c" in cache._probation
+
+    def test_clear(self):
+        cache = _yt_module._TranscriptCache()
+        cache.store("url", _build_entry())
+        cache.clear()
+        assert cache._total() == 0
+        assert cache.get("url") is None
+
+
+class TestCrossCacheGroupEviction:
+    def test_group_eviction_walks_registered_caches(self):
+        # Register two transcript caches and verify group eviction visits both
+        from parkour_mcp._pipeline import _evict_group, register_group_cache
+
+        sentinel_cache = _yt_module._TranscriptCache(max_entries=4)
+        register_group_cache(sentinel_cache)
+
+        try:
+            # Same group key in two different caches
+            entry_a = _build_entry()
+            entry_a.group = "yt:shared"
+            _yt_module._transcript_cache.store("url_main", entry_a)
+
+            entry_b = _build_entry()
+            entry_b.group = "yt:shared"
+            sentinel_cache.store("url_sentinel", entry_b)
+
+            # Trigger group eviction
+            _evict_group("yt:shared")
+
+            assert _yt_module._transcript_cache.get("url_main") is None
+            assert sentinel_cache.get("url_sentinel") is None
+        finally:
+            # Avoid leaking the sentinel cache into the global registry
+            from parkour_mcp import _pipeline
+            _pipeline._group_caches.remove(sentinel_cache)
+
+    def test_evict_propagates_to_page_cache_via_group(self):
+        from parkour_mcp._pipeline import _page_cache
+
+        # Set up: a transcript entry and a page cache entry with the same group
+        entry = _build_entry()
+        entry.group = "yt:GROUP123"
+        _yt_module._transcript_cache.store(entry.url, entry)
+        _page_cache.store(
+            "https://www.youtube.com/watch?v=GROUP123",
+            "title", "fake markdown", group="yt:GROUP123",
+        )
+
+        # Evict the transcript entry's group → page cache should also drop
+        _yt_module._transcript_cache._evict()
+
+        assert _yt_module._transcript_cache.get(entry.url) is None
+        assert _page_cache.get(
+            "https://www.youtube.com/watch?v=GROUP123"
+        ) is None
+
+
+class TestTranscriptEntryLifecycle:
+    def test_windows_built_eagerly(self):
+        entry = _build_entry()
+        assert len(entry.windows) >= 2
+        # Index has NOT been built yet
+        assert entry.is_built is False
+
+    def test_index_built_lazily_on_search(self):
+        entry = _build_entry()
+        assert entry.is_built is False
+        entry.search("keyword0_0")
+        assert entry.is_built is True
+
+    def test_search_result_indices_match_windows(self):
+        entry = _build_entry()
+        matched, _warnings = entry.search("keyword1_3")
+        # keyword1_3 is in window 1
+        assert 1 in matched
+
+    def test_empty_query_returns_all_windows(self):
+        entry = _build_entry()
+        matched, _ = entry.search(None)
+        assert sorted(matched) == list(range(len(entry.windows)))
+
+
+class TestTranscriptSchema:
+    def test_schema_field_types(self):
+        schema = _yt_module._TranscriptEntry._get_schema()
+        # Tantivy schemas don't expose field metadata in a stable way for
+        # introspection, so just verify build succeeded and re-fetching
+        # returns the same instance.
+        assert schema is not None
+        again = _yt_module._TranscriptEntry._get_schema()
+        assert schema is again
+
+    def test_schema_supports_range_query(self):
+        # Smoke: building a range query on start_seconds doesn't raise
+        schema = _yt_module._TranscriptEntry._get_schema()
+        q = tantivy.Query.range_query(
+            schema, "start_seconds", tantivy.FieldType.Float,
+            0.0, 30.0, include_lower=True, include_upper=False,
+        )
+        assert q is not None
+
+
+class TestTranscriptSearch:
+    def test_bm25_query_returns_matched_window(self):
+        entry = _build_entry()
+        matched, warnings = entry.search("keyword2_4")
+        assert warnings == []
+        # Should match exactly one window — the one whose segments contain
+        # that keyword. Don't pin to a specific index because the
+        # sentence-aware coalescer's window-count depends on pause vs
+        # punctuation interaction in the synthetic fixture.
+        assert len(matched) == 1
+        body = " ".join(s.text for s in entry.windows[matched[0]].segments)
+        assert "keyword2_4" in body
+
+    def test_bm25_no_match(self):
+        entry = _build_entry()
+        matched, warnings = entry.search("absolutelynothingmatchesthis")
+        assert matched == []
+        assert warnings == []
+
+    def test_range_filter_only(self):
+        entry = _build_entry()
+        # First window covers 0..30s; range 0..30 should match window 0
+        matched, _ = entry.search(None, start_seconds=0.0, end_seconds=30.0)
+        assert 0 in matched
+        # Window 1 starts after window 0; 0..30 may or may not include it
+        # depending on exact boundary
+
+    def test_range_filter_excludes_outside(self):
+        entry = _build_entry()
+        last = entry.segments[-1].end
+        # Range entirely beyond transcript should match nothing
+        matched, _ = entry.search(
+            None, start_seconds=last + 100, end_seconds=last + 200,
+        )
+        assert matched == []
+
+    def test_combined_query_and_range(self):
+        # Locate the window containing keyword1_3 by query, then verify a
+        # range spanning that window plus its query both hit it.
+        entry = _build_entry()
+        bare_match, _ = entry.search("keyword1_3")
+        assert len(bare_match) == 1
+        target_idx = bare_match[0]
+        target = entry.windows[target_idx]
+        matched, _ = entry.search(
+            "keyword1_3",
+            start_seconds=target.start, end_seconds=target.end + 0.1,
+        )
+        assert matched == [target_idx]
+
+    def test_combined_query_excluded_by_range(self):
+        # Restrict to window 0's time range; query for keyword in a later
+        # window. Must return empty.
+        entry = _build_entry()
+        win0 = entry.windows[0]
+        matched, _ = entry.search(
+            "keyword2_4",
+            start_seconds=win0.start, end_seconds=win0.end,
+        )
+        assert matched == []
+
+    def test_order_by_time(self):
+        entry = _build_entry()
+        # Match all windows in time order
+        matched, _ = entry.search(None, order="time")
+        # Should be sorted by start_seconds ascending = window indices in order
+        assert matched == sorted(matched)
+
+
+# ---------------------------------------------------------------------------
+# Window retrieval action
+# ---------------------------------------------------------------------------
+
+class TestWindowRetrievalAction:
+    @pytest.mark.asyncio
+    async def test_retrieve_specific_windows(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=3)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            windows=[0, 2],
+        )
+        assert "matched_windows:" in result
+        assert "requested_windows:" in result
+        # Window 1 content should NOT appear in body
+        # (look for keyword unique to window 1)
+        # Body lives after the second `---`; check window 0 and 2 are present
+        assert "window 0 segment" in result
+        assert "window 2 segment" in result
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_windows_reported(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=2)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            windows=[0, 99],
+        )
+        assert "unknown_windows:" in result
+        assert "99" in result
+
+    @pytest.mark.asyncio
+    async def test_all_invalid_windows_emit_note(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=2)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            windows=[100, 200],
+        )
+        assert "note:" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Search action via dispatcher
+# ---------------------------------------------------------------------------
+
+class TestSearchAction:
+    @pytest.mark.asyncio
+    async def test_search_returns_matched_windows(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=3)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            search="keyword1_2",
+        )
+        assert "search: keyword1_2" in result
+        assert "matched_windows:" in result
+        # Hint for context retrieval
+        assert "hint:" in result.lower()
+        assert "windows=" in result
+
+    @pytest.mark.asyncio
+    async def test_search_with_time_range(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=3)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            search="keyword1_2",
+            start_seconds=30.0,
+            end_seconds=70.0,
+        )
+        # Range echoed in frontmatter
+        assert "start_seconds:" in result
+        assert "end_seconds:" in result
+
+    @pytest.mark.asyncio
+    async def test_range_only_no_query(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=3)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            start_seconds=0.0,
+            end_seconds=35.0,
+        )
+        # Should match window 0 (0-30s) but not necessarily window 2
+        assert "matched_windows:" in result
+
+    @pytest.mark.asyncio
+    async def test_range_outside_transcript(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=2)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            start_seconds=10000.0,
+            end_seconds=20000.0,
+        )
+        # _build_frontmatter renders an empty list as a bare key followed
+        # by a newline (no list items). Look for the key + the note, not
+        # a literal "[]" rendering.
+        assert "matched_windows:\n" in result
+        assert "note:" in result.lower()
+        assert "transcript spans" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_order_time_echoed(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=3)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            search="keyword",  # match-all-ish
+            order="time",
+        )
+        assert "order: time" in result
+
+    @pytest.mark.asyncio
+    async def test_score_order_not_echoed(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=3)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            search="keyword1_2",
+        )
+        # Default order, should NOT appear in frontmatter
+        assert "order:" not in result
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher validation
+# ---------------------------------------------------------------------------
+
+class TestDispatcherValidation:
+    @pytest.mark.asyncio
+    async def test_search_and_windows_mutually_exclusive(self):
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            search="foo",
+            windows=[0],
+        )
+        assert "Error" in result
+        assert "mutually exclusive" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_windows_and_range_incompatible(self):
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            windows=[0],
+            start_seconds=10.0,
+        )
+        assert "Error" in result
+        assert "windows" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_inverted_range_rejected(self):
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            start_seconds=100.0,
+            end_seconds=10.0,
+        )
+        assert "Error" in result
+        assert "start_seconds" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Caching behavior via dispatcher
+# ---------------------------------------------------------------------------
+
+class TestTranscriptCacheBehavior:
+    @pytest.mark.asyncio
+    async def test_second_call_hits_cache(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=2)
+        fetch_count = {"n": 0}
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            fetch_count["n"] += 1
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            search="keyword0_1",
+        )
+        # Only one fetch — second call hit cache
+        assert fetch_count["n"] == 1

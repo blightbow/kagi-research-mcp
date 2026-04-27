@@ -20,11 +20,14 @@ timestamps), ``none`` (flat text, no timing), and ``structured`` (YAML).
 import asyncio
 import logging
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Optional
 
+import tantivy
 from pydantic import Field
 
+from ._pipeline import register_group_cache
 from .markdown import (
     FMEntries,
     _build_frontmatter,
@@ -599,6 +602,283 @@ def render_transcript(
 
 
 # ---------------------------------------------------------------------------
+# Transcript: cache entry with lazy Tantivy index
+# ---------------------------------------------------------------------------
+# Sized to match _PageCache; see docs/youtube-transcript-search.md for the
+# full schema and lifecycle rationale.
+
+_TRANSCRIPT_CACHE_MAX_ENTRIES = 8
+
+
+class _TranscriptEntry:
+    """A cached transcript with eagerly-built windows and lazy Tantivy index.
+
+    Construction populates ``segments`` and ``windows`` immediately —
+    they're cheap pure-Python computation that the basic transcript-render
+    path needs anyway. The Tantivy index builds lazily on first ``search``
+    call, so the no-search render path skips the indexing cost.
+
+    Cache key is the canonical YouTube watch URL; language preference is
+    NOT part of the key. First successful language fetch for a URL wins
+    for the cache entry's lifetime. Acceptable for v1; cross-language
+    workflows can clear the cache or hit yt-dlp directly.
+    """
+
+    __slots__ = (
+        "url", "video_id", "language_code", "is_generated",
+        "segments", "windows", "chunking_strategy", "group",
+        "_tantivy_index", "_built",
+    )
+
+    _SCHEMA = None
+
+    @classmethod
+    def _get_schema(cls):
+        """Build (or return cached) Tantivy schema for transcript indexing.
+
+        Schema is write-once at the class level, mirroring
+        ``_pipeline.py#_CacheEntry._get_schema``. ``idx`` is the only
+        stored field — window text and timestamps reconstruct from the
+        Python-side ``windows`` tuple keyed by ``idx``. Both
+        ``start_seconds`` and ``end_seconds`` are fast fields so range
+        queries can skip the inverted index and ``order_by_field`` works
+        for time-ordered results.
+        """
+        if cls._SCHEMA is None:
+            builder = tantivy.SchemaBuilder()
+            builder.add_text_field("body", stored=False)
+            builder.add_unsigned_field("idx", stored=True)
+            builder.add_float_field("start_seconds", indexed=True, fast=True)
+            builder.add_float_field("end_seconds", indexed=True, fast=True)
+            cls._SCHEMA = builder.build()
+        return cls._SCHEMA
+
+    def __init__(
+        self,
+        url: str,
+        video_id: str,
+        language_code: str,
+        is_generated: bool,
+        segments: tuple[Segment, ...],
+        windows: tuple[Window, ...],
+        chunking_strategy: str,
+        group: Optional[str] = None,
+    ):
+        self.url = url
+        self.video_id = video_id
+        self.language_code = language_code
+        self.is_generated = is_generated
+        self.segments = segments
+        self.windows = windows
+        self.chunking_strategy = chunking_strategy
+        self.group = group
+        self._tantivy_index = None
+        self._built = False
+
+    @property
+    def is_built(self) -> bool:
+        """Whether ``_ensure_built`` has produced the Tantivy index.
+
+        Does NOT trigger build, so introspection paths can read state
+        without paying the indexing cost.
+        """
+        return self._built
+
+    def _ensure_built(self) -> None:
+        """Build the Tantivy index over windows; idempotent."""
+        if self._built or not self.windows:
+            return
+        schema = self._get_schema()
+        self._tantivy_index = tantivy.Index(schema)
+        writer = self._tantivy_index.writer()
+        for i, window in enumerate(self.windows):
+            body_text = " ".join(seg.text for seg in window.segments)
+            writer.add_document(tantivy.Document(
+                body=body_text,
+                idx=i,
+                start_seconds=float(window.start),
+                end_seconds=float(window.end),
+            ))
+        writer.commit()
+        self._tantivy_index.reload()
+        self._built = True
+
+    def search(
+        self,
+        query_str: Optional[str] = None,
+        *,
+        start_seconds: Optional[float] = None,
+        end_seconds: Optional[float] = None,
+        order: str = "score",
+        limit: int = 50,
+    ) -> tuple[list[int], list[str]]:
+        """BM25 + time-range search over windows.
+
+        Returns ``(matched_window_indices, parse_warnings)``. The
+        warnings list mirrors ``_pipeline.py#_CacheEntry.search`` and
+        carries any ``parse_query_lenient`` errors for the dispatcher to
+        surface in frontmatter.
+
+        Composition rules:
+        - ``query_str`` only: BM25 over body, ranked by score.
+        - range only: all windows whose ``[start, end]`` interval
+          overlaps ``[start_seconds, end_seconds)``.
+        - both: ``BooleanQuery`` of body AND range, ranked by score.
+        - neither: matches all windows (``Query.all_query()``).
+
+        ``order='time'`` sorts by ``start_seconds`` ascending instead of
+        BM25 score; only meaningful when a query is set, but harmless
+        otherwise (results are already chronological).
+        """
+        self._ensure_built()
+        if not self._tantivy_index or not self.windows:
+            return [], []
+
+        schema = self._get_schema()
+        warnings: list[str] = []
+
+        body_query = None
+        if query_str:
+            body_query, errors = self._tantivy_index.parse_query_lenient(
+                query_str, default_field_names=["body"],
+            )
+            if errors:
+                warnings = [str(e) for e in errors]
+
+        # Window overlaps [start, end) iff start_seconds < end AND end_seconds > start.
+        # Half-open semantics match how Tantivy range_query treats inclusive
+        # vs exclusive bounds, and avoid the off-by-one issues a closed
+        # interval would have at chapter boundaries.
+        range_clauses = []
+        if end_seconds is not None:
+            range_clauses.append((
+                tantivy.Occur.Must,
+                tantivy.Query.range_query(
+                    schema, "start_seconds", tantivy.FieldType.Float,
+                    -1e18, end_seconds,
+                    include_lower=True, include_upper=False,
+                ),
+            ))
+        if start_seconds is not None:
+            range_clauses.append((
+                tantivy.Occur.Must,
+                tantivy.Query.range_query(
+                    schema, "end_seconds", tantivy.FieldType.Float,
+                    start_seconds, 1e18,
+                    include_lower=False, include_upper=False,
+                ),
+            ))
+
+        if body_query is not None and range_clauses:
+            clauses = [(tantivy.Occur.Must, body_query)] + range_clauses
+            query = tantivy.Query.boolean_query(clauses)
+        elif body_query is not None:
+            query = body_query
+        elif range_clauses:
+            query = tantivy.Query.boolean_query(range_clauses)
+        else:
+            query = tantivy.Query.all_query()
+
+        searcher = self._tantivy_index.searcher()
+        if order == "time":
+            # Tantivy defaults order_by_field to descending; transcripts
+            # read forward in time, so flip to ascending here.
+            results = searcher.search(
+                query, limit=limit,
+                order_by_field="start_seconds",
+                order=tantivy.Order.Asc,
+            )
+        else:
+            results = searcher.search(query, limit=limit)
+        matched = [searcher.doc(addr)["idx"][0] for _score, addr in results.hits]
+        return matched, warnings
+
+
+class _TranscriptCache:
+    """2Q cache for transcript entries.
+
+    Mirrors ``_pipeline.py#_PageCache`` semantics: probation FIFO +
+    protected LRU, scan-resistant promotion on second access, group-aware
+    eviction across registered caches via ``_pipeline._evict_group``.
+    Lives in ``youtube.py`` rather than ``_pipeline.py`` because the
+    schema is YouTube-specific; promote when a second time-series source
+    appears.
+    """
+
+    def __init__(self, max_entries: int = _TRANSCRIPT_CACHE_MAX_ENTRIES):
+        self._probation: OrderedDict[str, _TranscriptEntry] = OrderedDict()
+        self._protected: OrderedDict[str, _TranscriptEntry] = OrderedDict()
+        self._max_entries = max_entries
+
+    def _total(self) -> int:
+        return len(self._probation) + len(self._protected)
+
+    def get(self, url: str) -> Optional[_TranscriptEntry]:
+        entry = self._protected.get(url)
+        if entry is not None:
+            self._protected.move_to_end(url)
+            return entry
+        entry = self._probation.get(url)
+        if entry is not None:
+            del self._probation[url]
+            self._protected[url] = entry
+            self._protected.move_to_end(url)
+            return entry
+        return None
+
+    def store(self, url: str, entry: _TranscriptEntry) -> None:
+        if url in self._protected:
+            self._protected[url] = entry
+            self._protected.move_to_end(url)
+            return
+        if url in self._probation:
+            self._probation[url] = entry
+            self._probation.move_to_end(url)
+            return
+        while self._total() >= self._max_entries:
+            self._evict()
+        self._probation[url] = entry
+
+    def _evict(self) -> None:
+        # Local import dodges the circular pull at module-load time
+        # (this module already imports register_group_cache from _pipeline,
+        # but _evict_group is only needed inside this method).
+        from ._pipeline import _evict_group
+        victim_queue = self._probation if self._probation else self._protected
+        if not victim_queue:
+            return
+        oldest_url = next(iter(victim_queue))
+        oldest = victim_queue[oldest_url]
+        if oldest.group is not None:
+            # Evict locally first so the caller's loop terminates even when
+            # ``self`` is not in ``_group_caches`` (test-local instances),
+            # then fan out for cross-cache atomicity.
+            self._evict_group_local(oldest.group)
+            _evict_group(oldest.group)
+        else:
+            del victim_queue[oldest_url]
+
+    def _evict_group_local(self, group_key: str) -> list[str]:
+        """Evict every entry tagged with ``group_key`` from both queues."""
+        evicted: list[str] = []
+        for q in (self._probation, self._protected):
+            to_remove = [u for u, e in q.items() if e.group == group_key]
+            for u in to_remove:
+                evicted.append(u)
+                del q[u]
+        return evicted
+
+    def clear(self) -> None:
+        """Drop every entry from both queues."""
+        self._probation.clear()
+        self._protected.clear()
+
+
+_transcript_cache = _TranscriptCache()
+register_group_cache(_transcript_cache)
+
+
+# ---------------------------------------------------------------------------
 # Transcript: error mapping
 # ---------------------------------------------------------------------------
 
@@ -684,12 +964,184 @@ def _fetch_transcript_sync(video_id: str, languages: list[str]):
     return api.fetch(video_id, languages=languages)
 
 
+def _build_transcript_entry(
+    canonical_url: str,
+    video_id: str,
+    fetched,
+) -> _TranscriptEntry:
+    """Construct an entry from a youtube-transcript-api FetchedTranscript.
+
+    Caption cues often contain embedded newlines for display wrapping (a
+    single utterance rendered across two visual lines on the player).
+    Those newlines aren't semantic and break readability when rendered;
+    internal whitespace collapses to single spaces here so each segment
+    presents as one coherent line in compact and absolute output.
+    """
+    snippets = list(fetched.snippets)
+    segments = tuple(
+        Segment(
+            start=float(s.start),
+            duration=float(s.duration),
+            text=" ".join(s.text.split()),
+        )
+        for s in snippets
+    )
+    is_auto = bool(fetched.is_generated)
+    density = _punctuation_density(list(segments))
+    sentence_aware = (not is_auto) and density >= _PUNCTUATION_DENSITY_THRESHOLD
+    windows = tuple(coalesce_windows(list(segments), sentence_aware=sentence_aware))
+    chunking_strategy = "sentence" if sentence_aware else "time_window"
+    return _TranscriptEntry(
+        url=canonical_url,
+        video_id=video_id,
+        language_code=fetched.language_code,
+        is_generated=is_auto,
+        segments=segments,
+        windows=windows,
+        chunking_strategy=chunking_strategy,
+        group=f"yt:{video_id}",
+    )
+
+
+def _base_transcript_fm(entry: _TranscriptEntry) -> FMEntries:
+    """Build the frontmatter fields shared across all transcript responses."""
+    return FMEntries({
+        "source": entry.url,
+        "api": "youtube-transcript-api",
+        "video_id": entry.video_id,
+        "transcript_language": entry.language_code,
+        "transcript_kind": "auto" if entry.is_generated else "manual",
+        "total_windows": len(entry.windows),
+        "chunking_strategy": entry.chunking_strategy,
+        "trust": _TRUST_ADVISORY,
+    })
+
+
+def _render_full_transcript_response(
+    entry: _TranscriptEntry,
+    timestamps: TimestampMode,
+) -> str:
+    """Render the entire transcript (matches step 2 behavior)."""
+    body = render_transcript(list(entry.windows), mode=timestamps)
+    fm_entries = _base_transcript_fm(entry)
+    fm_entries["total_segments"] = len(entry.segments)
+    fm_entries["duration"] = _format_duration(
+        entry.segments[-1].end if entry.segments else None,
+    )
+    fm = _build_frontmatter(fm_entries)
+    title = f"Transcript ({entry.language_code})"
+    return fm + "\n\n" + _fence_content(body, title=title)
+
+
+def _render_window_retrieval_response(
+    entry: _TranscriptEntry,
+    requested: list[int],
+    timestamps: TimestampMode,
+) -> str:
+    """Render specific windows by index, preserving caller's order and dedup."""
+    total = len(entry.windows)
+    seen: set[int] = set()
+    in_order: list[int] = []
+    unknown: list[int] = []
+    for i in requested:
+        if i in seen:
+            continue
+        seen.add(i)
+        if 0 <= i < total:
+            in_order.append(i)
+        else:
+            unknown.append(i)
+
+    matched = [entry.windows[i] for i in in_order]
+    body = render_transcript(matched, mode=timestamps)
+
+    fm_entries = _base_transcript_fm(entry)
+    fm_entries["requested_windows"] = list(requested)
+    fm_entries["matched_windows"] = in_order
+    if unknown:
+        fm_entries["unknown_windows"] = unknown
+    if not in_order:
+        fm_entries.append("note", (
+            f"None of the requested windows are valid "
+            f"(range: 0..{total - 1})."
+        ))
+
+    fm = _build_frontmatter(fm_entries)
+    title = f"Transcript ({entry.language_code})"
+    return fm + "\n\n" + _fence_content(body, title=title)
+
+
+def _build_context_hint(matched: list[int], total: int) -> str:
+    """Suggest [i-1, i, i+1] for each matched index, clamped and deduped."""
+    context: set[int] = set()
+    for i in matched:
+        for j in (i - 1, i, i + 1):
+            if 0 <= j < total:
+                context.add(j)
+    return f"windows={sorted(context)} for context around matches"
+
+
+def _render_search_response(
+    entry: _TranscriptEntry,
+    query: Optional[str],
+    start_seconds: Optional[float],
+    end_seconds: Optional[float],
+    order: str,
+    timestamps: TimestampMode,
+) -> str:
+    """Render BM25 / time-range / combined search results."""
+    matched_indices, warnings = entry.search(
+        query,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        order=order,
+    )
+
+    matched_windows = [entry.windows[i] for i in matched_indices]
+    body = render_transcript(matched_windows, mode=timestamps)
+
+    fm_entries = _base_transcript_fm(entry)
+    fm_entries["matched_windows"] = matched_indices
+    if query is not None:
+        fm_entries["search"] = query
+    if start_seconds is not None:
+        fm_entries["start_seconds"] = start_seconds
+    if end_seconds is not None:
+        fm_entries["end_seconds"] = end_seconds
+    if order != "score":
+        fm_entries["order"] = order
+    for w in warnings:
+        fm_entries.append("warning", w)
+
+    if matched_indices:
+        fm_entries.append(
+            "hint",
+            _build_context_hint(matched_indices, len(entry.windows)),
+        )
+    elif start_seconds is not None or end_seconds is not None:
+        last_end = entry.segments[-1].end if entry.segments else 0
+        fm_entries.append("note", (
+            f"No windows match the time range. "
+            f"Transcript spans 0..{int(last_end)} seconds."
+        ))
+
+    fm = _build_frontmatter(fm_entries)
+    title = f"Transcript ({entry.language_code})"
+    return fm + "\n\n" + _fence_content(body, title=title)
+
+
 async def _transcript(
     url: str,
     languages: list[str],
     timestamps: TimestampMode,
+    *,
+    search: Optional[str] = None,
+    windows: Optional[list[int]] = None,
+    start_seconds: Optional[float] = None,
+    end_seconds: Optional[float] = None,
+    order: str = "score",
 ) -> str:
-    """Fetch and render the transcript for a YouTube video URL."""
+    """Fetch / cache / render a YouTube transcript per the requested shape."""
     detected = _detect_youtube_url(url)
     if detected is None:
         return f"Error: Not a recognized YouTube URL: {url}"
@@ -703,55 +1155,28 @@ async def _transcript(
             "The transcript action only accepts video URLs."
         )
     video_id = detected[1]
+    canonical_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    try:
-        fetched = await asyncio.to_thread(
-            _fetch_transcript_sync, video_id, languages,
+    entry = _transcript_cache.get(canonical_url)
+    if entry is None:
+        try:
+            fetched = await asyncio.to_thread(
+                _fetch_transcript_sync, video_id, languages,
+            )
+        except Exception as exc:
+            return _map_transcript_error(exc)
+        if not list(fetched.snippets):
+            return "Error: Transcript fetched but contains no segments."
+        entry = _build_transcript_entry(canonical_url, video_id, fetched)
+        _transcript_cache.store(canonical_url, entry)
+
+    if windows is not None:
+        return _render_window_retrieval_response(entry, windows, timestamps)
+    if search or start_seconds is not None or end_seconds is not None:
+        return _render_search_response(
+            entry, search, start_seconds, end_seconds, order, timestamps,
         )
-    except Exception as exc:
-        return _map_transcript_error(exc)
-
-    snippets = list(fetched.snippets)
-    if not snippets:
-        return "Error: Transcript fetched but contains no segments."
-
-    # Caption cues often contain embedded newlines for display wrapping
-    # (a single utterance rendered across two visual lines on the player).
-    # Those newlines aren't semantic and break readability when rendered;
-    # collapse internal whitespace to single spaces here so each segment
-    # presents as one coherent line in compact/absolute output.
-    segments = [
-        Segment(
-            start=float(s.start),
-            duration=float(s.duration),
-            text=" ".join(s.text.split()),
-        )
-        for s in snippets
-    ]
-
-    is_auto = bool(fetched.is_generated)
-    density = _punctuation_density(segments)
-    sentence_aware = (not is_auto) and density >= _PUNCTUATION_DENSITY_THRESHOLD
-
-    windows = coalesce_windows(segments, sentence_aware=sentence_aware)
-    body = render_transcript(windows, mode=timestamps)
-
-    fm_entries = FMEntries({
-        "source": f"https://www.youtube.com/watch?v={video_id}",
-        "api": "youtube-transcript-api",
-        "video_id": video_id,
-        "transcript_language": fetched.language_code,
-        "transcript_kind": "auto" if is_auto else "manual",
-        "total_segments": len(segments),
-        "total_windows": len(windows),
-        "chunking_strategy": "sentence" if sentence_aware else "time_window",
-        "duration": _format_duration(segments[-1].end),
-        "trust": _TRUST_ADVISORY,
-    })
-
-    fm = _build_frontmatter(fm_entries)
-    title = f"Transcript ({fetched.language_code})"
-    return fm + "\n\n" + _fence_content(body, title=title)
+    return _render_full_transcript_response(entry, timestamps)
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +1188,9 @@ async def youtube(
         description=(
             "The operation to perform. "
             "video: fetch video metadata + description from a YouTube URL. "
-            "transcript: fetch the caption transcript for a video URL."
+            "transcript: fetch the caption transcript for a video URL, "
+            "with optional BM25 search, time-range filtering, and "
+            "explicit window retrieval."
         ),
     )],
     url: Annotated[Optional[str], Field(
@@ -789,6 +1216,43 @@ async def youtube(
             "machine consumers."
         ),
     )] = "compact",
+    search: Annotated[Optional[str], Field(
+        description=(
+            "For 'transcript': BM25 query over window text. Mutually "
+            "exclusive with 'windows='. Combine with start_seconds / "
+            "end_seconds to restrict by time range."
+        ),
+    )] = None,
+    windows: Annotated[Optional[list[int]], Field(
+        description=(
+            "For 'transcript': retrieve specific window indices "
+            "(0-based). Mutually exclusive with 'search=' and "
+            "incompatible with time-range filters. Out-of-range indices "
+            "are reported in frontmatter rather than erroring."
+        ),
+    )] = None,
+    start_seconds: Annotated[Optional[float], Field(
+        description=(
+            "For 'transcript': lower bound on a time-range filter, in "
+            "seconds. Windows whose interval overlaps [start_seconds, "
+            "end_seconds) match. Combine with 'search=' for a "
+            "time-restricted query."
+        ),
+    )] = None,
+    end_seconds: Annotated[Optional[float], Field(
+        description=(
+            "For 'transcript': upper bound on a time-range filter, in "
+            "seconds. Half-open: a window starting exactly at "
+            "end_seconds does not match."
+        ),
+    )] = None,
+    order: Annotated[Literal["score", "time"], Field(
+        description=(
+            "For 'transcript' search: 'score' (default) ranks by BM25 "
+            "relevance; 'time' sorts by start_seconds ascending. Only "
+            "meaningful when a query or range is set."
+        ),
+    )] = "score",
 ) -> str:
     """YouTube integration via yt-dlp and youtube-transcript-api."""
     if action == "video":
@@ -812,9 +1276,30 @@ async def youtube(
     if action == "transcript":
         if not url:
             return "Error: 'url' is required for action='transcript'."
+        if search and windows is not None:
+            return (
+                "Error: 'search' and 'windows' are mutually exclusive."
+            )
+        if windows is not None and (
+            start_seconds is not None or end_seconds is not None
+        ):
+            return (
+                "Error: 'windows' cannot be combined with time-range filters."
+            )
+        if (
+            start_seconds is not None
+            and end_seconds is not None
+            and start_seconds > end_seconds
+        ):
+            return "Error: start_seconds must be <= end_seconds."
         return await _transcript(
             url,
             languages=languages or ["en"],
             timestamps=timestamps,
+            search=search,
+            windows=windows,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            order=order,
         )
     return f"Error: Unknown action '{action}'. Valid actions: video, transcript"
