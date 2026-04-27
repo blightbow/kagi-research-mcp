@@ -392,7 +392,7 @@ class TestVideoAction:
         assert "captions_auto_only: True" in result
 
     @pytest.mark.asyncio
-    async def test_video_default_body_is_description(self, monkeypatch):
+    async def test_video_with_comment_count_emits_see_also(self, monkeypatch):
         info = dict(_SAMPLE_INFO)
         info["comment_count"] = 1234
         monkeypatch.setattr(
@@ -403,17 +403,15 @@ class TestVideoAction:
             action="video",
             url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
         )
-        assert "body: description" in result
-        # Channel-reported comment count surfaces, with a hint
         assert "comment_count: 1234" in result
-        assert "fetch_comments=True" in result
-        # The description is in the body
+        # see_also points at the dedicated comments tool
+        assert "see_also" in result.lower()
+        assert "YoutubeComments" in result
         assert "The first video on YouTube" in result
 
     @pytest.mark.asyncio
-    async def test_video_no_comment_count_no_hint(self, monkeypatch):
+    async def test_video_no_comment_count_no_see_also(self, monkeypatch):
         info = dict(_SAMPLE_INFO)
-        # No comment_count field at all
         info.pop("comment_count", None)
         monkeypatch.setattr(
             _yt_module, "_get_ydl_video",
@@ -423,8 +421,7 @@ class TestVideoAction:
             action="video",
             url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
         )
-        # No hint when there's no signal that comments are worth fetching
-        assert "fetch_comments=True" not in result
+        assert "YoutubeComments" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -499,80 +496,107 @@ class TestFormatComment:
         assert "Line one line two line three" in out
 
 
-class TestFormatCommentTree:
+class TestFormatTopLevelOverview:
     def test_empty(self):
-        out = _yt_module._format_comment_tree([])
-        assert "(no comments)" in out
+        out = _yt_module._format_top_level_overview([])
+        assert "(no top-level comments)" in out
 
-    def test_top_level_and_replies(self):
-        comments = _COMMENTS_INFO["comments"]
-        out = _yt_module._format_comment_tree(comments)
-        # Header counts top-level vs replies separately
-        assert "2 top-level" in out
-        assert "1 replies" in out
-        # Top-level numbered
+    def test_overview_lists_top_level_with_ids(self):
+        # Pass only top-level comments (overview mode). Inline cast to
+        # narrow the dict-literal value's mixed-type inference for ty.
+        from typing import cast
+        all_comments = cast(list[dict], _COMMENTS_INFO["comments"])
+        top_level = [
+            c for c in all_comments
+            if not c.get("parent") or c.get("parent") == "root"
+        ]
+        out = _yt_module._format_top_level_overview(top_level)
+        assert "Comments (2 top-level" in out
+        # Each top-level numbered, includes id for drill-down
         assert "1. **First Commenter**" in out
+        assert "id=Ugxa1" in out
         assert "2. **Second Commenter**" in out
-        # Reply indented under its parent
-        first_idx = out.index("1. **First Commenter**")
-        second_idx = out.index("2. **Second Commenter**")
-        reply_idx = out.index("**Replier**")
-        assert first_idx < reply_idx < second_idx
-        assert "   - **Replier**" in out
+        assert "id=Ugxa2" in out
+        # Replies must NOT be in the overview body
+        assert "**Replier**" not in out
 
 
-class TestFetchCommentsPivot:
+class TestFormatCommentThread:
+    def test_thread_renders_target_and_replies(self):
+        comments = _COMMENTS_INFO["comments"]
+        out = _yt_module._format_comment_thread(comments, "Ugxa1")
+        assert "Thread for comment id=Ugxa1" in out
+        assert "**First Commenter**" in out
+        # Replies section
+        assert "Replies (1)" in out
+        assert "**Replier**" in out
+        # Reply text whitespace was normalized through _format_comment
+        assert "I agree. More thoughts here." in out
+
+    def test_thread_for_comment_with_no_replies(self):
+        comments = _COMMENTS_INFO["comments"]
+        out = _yt_module._format_comment_thread(comments, "Ugxa2")
+        assert "Thread for comment id=Ugxa2" in out
+        assert "**Second Commenter**" in out
+        assert "Replies (0)" in out
+        assert "(no replies in view)" in out
+
+    def test_thread_unknown_id(self):
+        comments = _COMMENTS_INFO["comments"]
+        out = _yt_module._format_comment_thread(comments, "UgxNotThere")
+        assert "Error" in out
+        assert "not found" in out
+
+    def test_thread_id_is_a_reply_rejected(self):
+        comments = _COMMENTS_INFO["comments"]
+        out = _yt_module._format_comment_thread(comments, "Ugxa1.reply")
+        assert "Error" in out
+        assert "is a reply, not a top-level" in out
+
+
+class TestYoutubeCommentsOverview:
     @pytest.mark.asyncio
-    async def test_fetch_comments_replaces_description(self, monkeypatch):
-        def fake_extract(url, max_top, max_replies):
-            del url, max_top, max_replies
+    async def test_overview_lists_top_level_only(self, monkeypatch):
+        def fake_extract(url, max_comments):
+            del url, max_comments
             return _COMMENTS_INFO
         monkeypatch.setattr(
             _yt_module, "_extract_video_with_comments_sync", fake_extract,
         )
-        result = await youtube(
-            action="video",
+        result = await _yt_module.youtube_comments(
             url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
-            fetch_comments=True,
         )
-        # Pivot signaled in frontmatter
-        assert "body: comments" in result
-        # Counts surface
+        assert "view: overview" in result
         assert "top_level_comments: 2" in result
-        assert "total_comments: 3" in result
-        # Description must NOT be in the body when comments are requested
-        assert "The first video on YouTube" not in result
-        # Comments ARE in the body
         assert "**First Commenter**" in result
-        assert "**Replier**" in result
-        # Hint nudges back to the description view
-        assert "Call without fetch_comments=True" in result
+        assert "**Second Commenter**" in result
+        # Replies absent in overview
+        assert "**Replier**" not in result
+        # IDs visible for drill-down
+        assert "id=Ugxa1" in result
+        assert "id=Ugxa2" in result
+        # Hint nudges toward drill-down
+        assert "comment_id" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_fetch_comments_empty_list(self, monkeypatch):
+    async def test_overview_empty(self, monkeypatch):
         info = dict(_COMMENTS_INFO)
         info["comments"] = []
-        info["comment_count"] = 0
 
-        def fake_extract(url, max_top, max_replies):
-            del url, max_top, max_replies
+        def fake_extract(url, max_comments):
+            del url, max_comments
             return info
         monkeypatch.setattr(
             _yt_module, "_extract_video_with_comments_sync", fake_extract,
         )
-        result = await youtube(
-            action="video",
+        result = await _yt_module.youtube_comments(
             url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
-            fetch_comments=True,
         )
-        assert "total_comments: 0" in result
-        assert "(no comments)" in result
+        assert "top_level_comments: 0" in result
+        assert "(no top-level comments)" in result
 
     @pytest.mark.asyncio
-    async def test_fetch_comments_extractor_args(self, monkeypatch):
-        # The opts the per-call YoutubeDL receives should include the
-        # max_comments cap and comment_sort. We can verify by intercepting
-        # the YoutubeDL constructor.
+    async def test_overview_extractor_args_use_caller_limit(self, monkeypatch):
         captured = {}
 
         class _Spy:
@@ -584,23 +608,144 @@ class TestFetchCommentsPivot:
             def sanitize_info(self, info):
                 return info
 
-        # Patch yt_dlp.YoutubeDL just for this test
         import yt_dlp as _ydl_pkg
         monkeypatch.setattr(_ydl_pkg, "YoutubeDL", _Spy)
 
-        await youtube(
-            action="video",
+        await _yt_module.youtube_comments(
             url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
-            fetch_comments=True,
+            limit=15,
         )
-        opts = captured["opts"]
-        assert opts.get("getcomments") is True
-        ea = opts["extractor_args"]["youtube"]
+        ea = captured["opts"]["extractor_args"]["youtube"]
         assert ea["comment_sort"] == ["top"]
-        assert ea["max_comments"] == [
-            str(_yt_module._COMMENTS_MAX_TOP_LEVEL),
-            str(_yt_module._COMMENTS_MAX_REPLIES),
-        ]
+        # Overview cap encodes the caller's limit; replies disabled
+        assert ea["max_comments"] == ["15", "15", "0"]
+
+    @pytest.mark.asyncio
+    async def test_overview_limit_clamped(self, monkeypatch):
+        captured = {}
+
+        class _Spy:
+            def __init__(self, opts):
+                captured["opts"] = opts
+            def extract_info(self, url, download):
+                del url, download
+                return _COMMENTS_INFO
+            def sanitize_info(self, info):
+                return info
+
+        import yt_dlp as _ydl_pkg
+        monkeypatch.setattr(_ydl_pkg, "YoutubeDL", _Spy)
+
+        await _yt_module.youtube_comments(
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            limit=999,
+        )
+        ea = captured["opts"]["extractor_args"]["youtube"]
+        assert ea["max_comments"][0] == str(_yt_module._YOUTUBE_COMMENTS_LIMIT_MAX)
+
+
+class TestYoutubeCommentsThread:
+    @pytest.mark.asyncio
+    async def test_comment_id_drills_into_thread(self, monkeypatch):
+        def fake_extract(url, max_comments):
+            del url, max_comments
+            return _COMMENTS_INFO
+        monkeypatch.setattr(
+            _yt_module, "_extract_video_with_comments_sync", fake_extract,
+        )
+        result = await _yt_module.youtube_comments(
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            comment_id="Ugxa1",
+        )
+        assert "view: thread" in result
+        assert "comment_id: Ugxa1" in result
+        assert "replies_in_view: 1" in result
+        # Target + reply present
+        assert "**First Commenter**" in result
+        assert "**Replier**" in result
+        # Other top-level NOT present
+        assert "**Second Commenter**" not in result
+
+    @pytest.mark.asyncio
+    async def test_comment_id_unknown_renders_error_in_body(self, monkeypatch):
+        def fake_extract(url, max_comments):
+            del url, max_comments
+            return _COMMENTS_INFO
+        monkeypatch.setattr(
+            _yt_module, "_extract_video_with_comments_sync", fake_extract,
+        )
+        result = await _yt_module.youtube_comments(
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            comment_id="UgxNotThere",
+        )
+        assert "view: thread" in result
+        assert "Error" in result
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_comment_id_pointing_at_reply_rejected(self, monkeypatch):
+        def fake_extract(url, max_comments):
+            del url, max_comments
+            return _COMMENTS_INFO
+        monkeypatch.setattr(
+            _yt_module, "_extract_video_with_comments_sync", fake_extract,
+        )
+        result = await _yt_module.youtube_comments(
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            comment_id="Ugxa1.reply",
+        )
+        assert "is a reply" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_thread_extractor_args_shape(self, monkeypatch):
+        captured = {}
+
+        class _Spy:
+            def __init__(self, opts):
+                captured["opts"] = opts
+            def extract_info(self, url, download):
+                del url, download
+                return _COMMENTS_INFO
+            def sanitize_info(self, info):
+                return info
+
+        import yt_dlp as _ydl_pkg
+        monkeypatch.setattr(_ydl_pkg, "YoutubeDL", _Spy)
+
+        await _yt_module.youtube_comments(
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            comment_id="Ugxa1",
+        )
+        ea = captured["opts"]["extractor_args"]["youtube"]
+        assert ea["max_comments"] == list(_yt_module._THREAD_MAX_COMMENTS)
+
+
+class TestYoutubeCommentsValidation:
+    @pytest.mark.asyncio
+    async def test_no_url(self):
+        result = await _yt_module.youtube_comments(url="")
+        assert "Error" in result and "url" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_youtube_url(self):
+        result = await _yt_module.youtube_comments(url="https://example.com/v")
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_channel_url_rejected(self):
+        result = await _yt_module.youtube_comments(
+            url="https://www.youtube.com/@MKBHD",
+        )
+        assert "Error" in result
+        assert "channel" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_music_url_rejected(self):
+        result = await _yt_module.youtube_comments(
+            url="https://music.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "Error" in result
+        assert "music" in result.lower()
 
 
 # ---------------------------------------------------------------------------

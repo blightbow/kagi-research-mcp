@@ -28,6 +28,7 @@ import tantivy
 from pydantic import Field
 
 from ._pipeline import register_group_cache
+from .common import tool_name
 from .markdown import (
     FMEntries,
     _build_frontmatter,
@@ -239,27 +240,40 @@ def _captions_summary(info: dict) -> tuple[list[str], bool]:
 
 
 # ---------------------------------------------------------------------------
-# Action: video (with optional comment fetch)
+# Action: video (with optional comments)
 # ---------------------------------------------------------------------------
-# Comment fetching opts in via ``fetch_comments=True`` because it adds
-# multiple Innertube continuation requests on top of the single player
-# call the basic metadata path needs. A 50/10 cap (top-level / replies-
-# per-top-level) keeps the call bounded; yt-dlp's ``max_comments``
-# extractor arg enforces server-side.
+# Comments are optional and split into two views: a top-level overview
+# (``fetch_comments=True``) and a per-thread drill-down
+# (``comment_id="..."``). The two views match how a human reads YouTube
+# comments: skim top-level statements about the video, then drill into
+# threads that look interesting.
+#
+# Each view uses a different ``max_comments`` extractor arg shape:
+#
+# - Overview: 50 top-level, 0 replies. Cheap (no reply continuations).
+# - Thread:   high overall cap, 50 top-level scope, up to 50 replies per
+#   top-level. Drill-down depends on the target comment being in the
+#   first 50 top-level by ``comment_sort=top``.
+#
+# yt-dlp's ``max_comments`` is a 4-tuple of strings:
+# ``(total, max_parents, max_replies, max_replies_per_thread)``. ``"all"``
+# disables that bound. Each value is a string (yt-dlp parses the
+# extractor arg as a string list).
 
-_COMMENTS_MAX_TOP_LEVEL = 50
-_COMMENTS_MAX_REPLIES = 10
+# 50 top-level, ``all`` parents (no parent cap), 0 total replies.
+_OVERVIEW_MAX_COMMENTS = ("50", "all", "0")
+# 1000 total cap, 50 parents, ``all`` replies but capped at 50 per thread.
+_THREAD_MAX_COMMENTS = ("1000", "50", "all", "50")
 
 
 def _extract_video_with_comments_sync(
-    url: str, max_top: int, max_replies: int,
+    url: str, max_comments: tuple[str, ...],
 ) -> Any:
     """Run yt-dlp video extraction with comments enabled.
 
     Per-call YoutubeDL because the video-mode singleton's opts don't
     include ``getcomments`` or the ``extractor_args`` overrides — and
-    mutating singleton params across calls would race. Comments are an
-    opt-in rare path, so the per-call construction cost is acceptable.
+    mutating singleton params across calls would race.
     """
     from yt_dlp import YoutubeDL  # type: ignore[import-not-found]
     opts = {
@@ -268,7 +282,7 @@ def _extract_video_with_comments_sync(
         "extractor_args": {
             "youtube": {
                 "comment_sort": ["top"],
-                "max_comments": [str(max_top), str(max_replies)],
+                "max_comments": list(max_comments),
             },
         },
     }
@@ -277,13 +291,18 @@ def _extract_video_with_comments_sync(
     return ydl.sanitize_info(info)
 
 
-def _format_comment(c: dict) -> str:
+def _format_comment(c: dict, *, include_id: bool = False) -> str:
     """Format the author + meta + text portion of one comment.
 
     Internal whitespace in comment text is collapsed to single spaces
     (same convention as caption segments) so each comment renders as
     one line in the output. Pinned and uploader-author badges surface
     as bracketed tags rather than emoji.
+
+    ``include_id=True`` appends the comment's yt-dlp id so the LLM
+    caller can pass it back via ``comment_id=`` to drill into the
+    thread. Used in the overview view; suppressed in thread view
+    where the id appears in the heading.
     """
     author = c.get("author") or "(anonymous)"
     likes = c.get("like_count")
@@ -304,79 +323,78 @@ def _format_comment(c: dict) -> str:
         head_bits.append(f"{likes:,} likes")
     if time_text:
         head_bits.append(time_text)
+    if include_id:
+        head_bits.append(f"id={c.get('id') or '?'}")
     head = ", ".join(head_bits)
 
     text = " ".join((c.get("text") or "").split())
     return f"{head}: {text}"
 
 
-def _format_comment_tree(comments: list[dict]) -> str:
-    """Render yt-dlp's flat comment list as a nested numbered listing.
+def _format_top_level_overview(top_level: list[dict]) -> str:
+    """Render top-level comments only, with id and metadata for drill-down.
 
-    yt-dlp returns comments as a flat list with a ``parent`` field
-    pointing at the parent comment id (or the literal ``"root"`` for
-    top-level). Group into top-level + reply children, then render
-    top-level numbered with replies bullet-indented underneath.
-    Sort order is preserved from yt-dlp (top by default per the
-    ``comment_sort=top`` extractor arg).
+    Each comment renders on a single line with the comment id appended
+    so the LLM can pass it back to ``comment_id=`` to drill into the
+    thread. Replies are deliberately not shown here — the overview is
+    a list of statements about the video, not a tree.
     """
-    if not comments:
-        return "## Comments\n\n(no comments)"
-
-    by_id = {c.get("id"): c for c in comments if c.get("id")}
-    children: dict[str, list[dict]] = {}
-    top_level: list[dict] = []
-    for c in comments:
-        parent = c.get("parent")
-        if parent and parent != "root" and parent in by_id:
-            children.setdefault(parent, []).append(c)
-        else:
-            top_level.append(c)
-
-    n_top = len(top_level)
-    n_replies = len(comments) - n_top
-    if n_replies:
-        header = f"## Comments ({n_top} top-level, {n_replies} replies)"
-    else:
-        header = f"## Comments ({n_top})"
-
-    parts = [header, ""]
+    if not top_level:
+        return "## Comments\n\n(no top-level comments)"
+    parts = [
+        f"## Comments ({len(top_level)} top-level, sorted by top)",
+        "",
+    ]
     for i, c in enumerate(top_level, 1):
-        parts.append(f"{i}. {_format_comment(c)}")
-        cid = c.get("id")
-        if cid:
-            for reply in children.get(cid, []):
-                parts.append(f"   - {_format_comment(reply)}")
+        parts.append(f"{i}. {_format_comment(c, include_id=True)}")
     return "\n".join(parts)
 
 
-async def _video(url: str, *, fetch_comments: bool = False) -> str:
-    """Fetch a single YouTube video, returning either description or comments.
+def _format_comment_thread(comments: list[dict], target_id: str) -> str:
+    """Render the thread (target top-level comment + its replies)."""
+    by_id = {c.get("id"): c for c in comments if c.get("id")}
+    target = by_id.get(target_id)
+    if not target:
+        return (
+            f"## Thread for comment id={target_id}\n\n"
+            f"Error: comment id={target_id} not found among the fetched "
+            f"comments. Call again with fetch_comments=True (no "
+            f"comment_id) to see available IDs."
+        )
+    if target.get("parent") and target.get("parent") != "root":
+        return (
+            f"## Thread for comment id={target_id}\n\n"
+            f"Error: comment id={target_id} is a reply, not a top-level "
+            f"comment. Pass the parent comment's id instead."
+        )
 
-    The default body is the video's description. ``fetch_comments=True``
-    pivots to return the comment tree instead — comments and the
-    description are independent investigations, so the body presents
-    one or the other, not both. Frontmatter carries the same video
-    metadata in either case, plus comment counts when comments were
-    requested.
-    """
+    replies = [c for c in comments if c.get("parent") == target_id]
+
+    parts = [f"## Thread for comment id={target_id}", ""]
+    parts.append(_format_comment(target))
+    parts.append("")
+    parts.append(f"### Replies ({len(replies)})")
+    parts.append("")
+    if replies:
+        for r in replies:
+            parts.append(f"- {_format_comment(r)}")
+    else:
+        parts.append("(no replies in view)")
+    return "\n".join(parts)
+
+
+async def _video(url: str) -> str:
+    """Fetch metadata + description for a single YouTube video URL."""
+    ydl = _get_ydl_video()
     try:
-        if fetch_comments:
-            info = await asyncio.to_thread(
-                _extract_video_with_comments_sync, url,
-                _COMMENTS_MAX_TOP_LEVEL, _COMMENTS_MAX_REPLIES,
-            )
-        else:
-            ydl = _get_ydl_video()
-            raw = await asyncio.to_thread(
-                ydl.extract_info, url, download=False,
-            )
-            info = ydl.sanitize_info(raw) if raw is not None else None
+        info = await asyncio.to_thread(ydl.extract_info, url, download=False)
     except Exception as exc:
         return _map_yt_dlp_error(exc)
 
     if info is None:
         return f"Error: yt-dlp returned no metadata for {url}"
+
+    info = ydl.sanitize_info(info)
     if not isinstance(info, dict):
         return f"Error: Unexpected yt-dlp response shape for {url}"
 
@@ -385,6 +403,7 @@ async def _video(url: str, *, fetch_comments: bool = False) -> str:
     description = info.get("description") or ""
 
     captions_langs, captions_auto_only = _captions_summary(info)
+    comment_count = info.get("comment_count")
 
     fm_entries = FMEntries({
         "title": title,
@@ -405,41 +424,21 @@ async def _video(url: str, *, fetch_comments: bool = False) -> str:
         "availability": info.get("availability"),
         "captions_available": captions_langs or None,
         "captions_auto_only": True if captions_auto_only else None,
+        "comment_count": comment_count,
         "trust": _TRUST_ADVISORY,
     })
 
-    if fetch_comments:
-        comments = list(info.get("comments") or [])
-        # Top-level vs reply split for frontmatter counts. Use the same
-        # parent-field convention as _format_comment_tree.
-        by_id = {c.get("id"): c for c in comments if c.get("id")}
-        n_top_level = sum(
-            1 for c in comments
-            if not c.get("parent")
-            or c.get("parent") == "root"
-            or c.get("parent") not in by_id
-        )
-        fm_entries["top_level_comments"] = n_top_level
-        fm_entries["total_comments"] = len(comments)
-        fm_entries["body"] = "comments"
+    # Pivot hint: when comments exist, point at the dedicated
+    # YoutubeComments tool rather than carrying comment-specific
+    # parameters on this action.
+    if comment_count:
         fm_entries.append(
-            "hint",
-            "Call without fetch_comments=True to read the description instead.",
+            "see_also",
+            f"{tool_name('youtube_comments')} for the comment thread.",
         )
-        body = _format_comment_tree(comments)
-    else:
-        fm_entries["body"] = "description"
-        if info.get("comment_count") is not None:
-            # Surface the channel-reported comment count so callers know
-            # there are comments to fetch (and roughly how many).
-            fm_entries["comment_count"] = info.get("comment_count")
-            fm_entries.append(
-                "hint",
-                "Call with fetch_comments=True to read the comment tree.",
-            )
-        body = description.strip() if description else "(no description)"
 
     fm = _build_frontmatter(fm_entries)
+    body = description.strip() if description else "(no description)"
     return fm + "\n\n" + _fence_content(body, title=title)
 
 
@@ -1912,15 +1911,6 @@ async def youtube(
             "channels don't pull every upload."
         ),
     )] = _LIST_LIMIT_DEFAULT,
-    fetch_comments: Annotated[bool, Field(
-        description=(
-            "For 'video': also fetch the comment tree (top-level + first "
-            "tier of replies). Off by default — comments are an expensive "
-            "extraction (multiple Innertube continuations) so the basic "
-            "metadata path stays cheap. Capped server-side at 50 "
-            "top-level comments and 10 replies per top-level."
-        ),
-    )] = False,
 ) -> str:
     """YouTube integration via yt-dlp and youtube-transcript-api."""
     if action == "video":
@@ -1940,7 +1930,7 @@ async def youtube(
                 f"Error: URL is a {kind[0]}, not a video. "
                 f"The {kind[0]} action is not yet implemented."
             )
-        return await _video(url, fetch_comments=fetch_comments)
+        return await _video(url)
     if action == "transcript":
         if not url:
             return "Error: 'url' is required for action='transcript'."
@@ -2012,3 +2002,118 @@ async def youtube(
         f"Error: Unknown action '{action}'. "
         "Valid actions: video, transcript, channel, playlist, search"
     )
+
+
+# ---------------------------------------------------------------------------
+# MCP-facing dispatcher: youtube_comments
+# ---------------------------------------------------------------------------
+# Comments are split out into their own tool because the comment-specific
+# parameters (comment_id, eventually sort/since) don't belong on the
+# primary Youtube tool — they would dilute its description with options
+# that only apply to one path. The Youtube tool's video action surfaces a
+# ``see_also`` pointing here when comment_count > 0, mirroring how
+# MediaWiki's page action points at its dedicated references action.
+
+_YOUTUBE_COMMENTS_LIMIT_DEFAULT = 30
+_YOUTUBE_COMMENTS_LIMIT_MAX = 50
+
+
+async def youtube_comments(
+    url: Annotated[str, Field(
+        description=(
+            "YouTube video URL. Same forms as the Youtube tool's video "
+            "action: watch?v=, youtu.be/, shorts/, clip/, embed/, v/."
+        ),
+    )],
+    comment_id: Annotated[Optional[str], Field(
+        description=(
+            "Drill into a specific top-level comment's thread. The id "
+            "comes from the overview view's id= field on each entry. "
+            "Omit for the top-level overview."
+        ),
+    )] = None,
+    limit: Annotated[int, Field(
+        description=(
+            "Top-level overview cap. Default 30, capped at 50. yt-dlp "
+            "returns comments by 'top' sort (highest score first); the "
+            "cap constrains how many are rendered. Ignored when "
+            "comment_id is set."
+        ),
+    )] = _YOUTUBE_COMMENTS_LIMIT_DEFAULT,
+) -> str:
+    """Read YouTube video comments: top-level overview or thread drill-down."""
+    if not url:
+        return "Error: 'url' is required."
+    detected = _detect_youtube_url(url)
+    if detected is None:
+        return f"Error: Not a recognized YouTube URL: {url}"
+    if detected[0] == "music":
+        return (
+            "Error: music.youtube.com URLs are out of scope for this tool."
+        )
+    if detected[0] != "video":
+        return (
+            f"Error: URL is a {detected[0]}, not a video. "
+            "Pass a video URL."
+        )
+    video_id = detected[1]
+    canonical_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    capped_limit = max(1, min(limit, _YOUTUBE_COMMENTS_LIMIT_MAX))
+    if comment_id:
+        max_comments = _THREAD_MAX_COMMENTS
+    else:
+        # Overview cap honors the caller's limit by passing it as
+        # max_parents (the second value). Total cap stays at limit so
+        # yt-dlp stops once we've collected enough top-level entries.
+        max_comments = (str(capped_limit), str(capped_limit), "0")
+
+    try:
+        info = await asyncio.to_thread(
+            _extract_video_with_comments_sync, canonical_url, max_comments,
+        )
+    except Exception as exc:
+        return _map_yt_dlp_error(exc)
+
+    if info is None or not isinstance(info, dict):
+        return f"Error: yt-dlp returned no metadata for {url}"
+
+    comments = list(info.get("comments") or [])
+    title = info.get("title") or "Untitled"
+
+    fm_entries = FMEntries({
+        "source": canonical_url,
+        "api": "yt-dlp",
+        "video_id": video_id,
+        "title": title,
+        "channel": info.get("channel") or info.get("uploader"),
+        "trust": _TRUST_ADVISORY,
+    })
+
+    if comment_id:
+        replies = [c for c in comments if c.get("parent") == comment_id]
+        fm_entries["view"] = "thread"
+        fm_entries["comment_id"] = comment_id
+        fm_entries["replies_in_view"] = len(replies)
+        fm_entries.append(
+            "hint",
+            "Drop comment_id to see the top-level overview.",
+        )
+        body = _format_comment_thread(comments, comment_id)
+        fence_title = f"{title} — thread {comment_id}"
+    else:
+        top_level = [
+            c for c in comments
+            if not c.get("parent") or c.get("parent") == "root"
+        ]
+        fm_entries["view"] = "overview"
+        fm_entries["top_level_comments"] = len(top_level)
+        fm_entries.append(
+            "hint",
+            "Pass comment_id=<id> to drill into a specific thread.",
+        )
+        body = _format_top_level_overview(top_level)
+        fence_title = f"{title} — comments"
+
+    fm = _build_frontmatter(fm_entries)
+    return fm + "\n\n" + _fence_content(body, title=fence_title)

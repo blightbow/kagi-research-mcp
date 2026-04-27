@@ -19,7 +19,7 @@ from .ietf import ietf
 from .packages import packages
 from .discourse import discourse
 from .mediawiki import mediawiki
-from .youtube import youtube
+from .youtube import youtube, youtube_comments
 from .shelf import research_shelf, _get_shelf
 from .common import TOOL_NAMES, init_tool_names, s2_enabled
 
@@ -73,6 +73,7 @@ _ALWAYS_ON_TOOLS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("discourse", discourse),
     ("mediawiki", mediawiki),
     ("youtube", youtube),
+    ("youtube_comments", youtube_comments),
 )
 
 # semantic_scholar is gated by S2_ACCEPT_TOS at runtime (see common.s2_enabled).
@@ -146,6 +147,7 @@ PROFILE_VARS = {
         "semantic_scholar_tool": "SemanticScholar",
         "shelf_tool": "ResearchShelf",
         "youtube_tool": "Youtube",
+        "youtube_comments_tool": "YoutubeComments",
         "fetch_direct_when_to_use": (
             "Unlike WebFetch, fetches through the user's device instead of proxying through\n"
             "Anthropic's servers. Uses precise content extraction techniques and clean\n"
@@ -168,6 +170,7 @@ PROFILE_VARS = {
         "semantic_scholar_tool": "semantic_scholar",
         "shelf_tool": "research_shelf",
         "youtube_tool": "youtube",
+        "youtube_comments_tool": "youtube_comments",
         "fetch_direct_when_to_use": (
             "Unlike web_fetch, fetches through the user's device instead of proxying through\n"
             "Anthropic's servers. Uses precise content extraction techniques and clean\n"
@@ -505,18 +508,10 @@ the right tab and resubmit. Search results match what the user would
 see browsing youtube.com/results?search_query=... since yt-dlp routes
 through the same Innertube endpoint.
 
-A 'video' call returns either the description (default) or the
-comment tree (fetch_comments=true) — these are independent
-investigations and the body pivots between them rather than
-concatenating. Frontmatter carries the video metadata in either case,
-plus 'body: description' or 'body: comments' to declare which view
-was emitted. When the description is shown and the channel reports a
-non-zero comment count, frontmatter includes a hint pointing at the
-fetch_comments=true call.
-
-Comment fetching is opt-in because it adds multiple Innertube
-continuation requests on top of the basic metadata fetch; the cap is
-50 top-level comments and 10 replies per top-level.
+A 'video' call returns the description. Comments live on the
+dedicated {youtube_comments_tool} — the video frontmatter surfaces a
+'see_also' pointing there when the channel reports a non-zero comment
+count, so callers can pivot when they want to read the conversation.
 
 Music URLs (music.youtube.com) are out of scope and will be handled by
 a sibling tool.
@@ -524,6 +519,30 @@ a sibling tool.
 No authentication required. May fail with bot-detection or PoTokenRequired
 errors; residential connections fare best. The fallback workaround when
 blocked is to set HTTPS_PROXY to a residential proxy endpoint.""",
+
+    "youtube_comments": """Read YouTube video comments: top-level overview or per-thread drill-down.
+
+Pivot from {youtube_tool} when the goal is to read what viewers are
+saying about a video. The video tool returns the description; this
+tool returns the conversation.
+
+Two views, selected by whether comment_id is set:
+- Overview (no comment_id): top-level comments sorted by 'top', each
+  with author, score, pinned/uploader badges, and a yt-dlp comment id
+  for drill-down. No replies.
+- Thread (comment_id=<id>): the target top-level comment plus its
+  replies (up to 50 per thread).
+
+The flow matches how a human reads YouTube comments: skim top-level
+statements for what people thought of the video, then drill into
+threads that look interesting (high score, pinned, uploader replied).
+
+URL formats accepted: same as the {youtube_tool} video action —
+watch?v=, youtu.be/, shorts/, clip/, embed/, v/.
+
+No authentication required. Comment-fetch failures (bot detection,
+private video, age-restricted) surface as user-facing error strings
+via the same exception mapping as {youtube_tool}.""",
 
     "mediawiki": """Search and retrieve content from Wikipedia and other MediaWiki sites.
 
