@@ -129,6 +129,50 @@ prettier#12074 (open since 2022) are the upstream threads where this
 exact ask was made and declined; both maintainers explicitly recommend
 post-processing.
 
+### Width-adaptive table rendering
+
+Two table-format aesthetics serve different cases.  Uniform-padded grid
+(closing pipes align vertically) reads sharpest when every row fits within
+the viewer's line width.  Ragged-last-column avoids the wall of trailing
+whitespace that lands when one long row dominates everyone else's pad.
+Neither is universally optimal — the choice should follow the data.
+
+`scripts/cog_helpers.render_table_adaptive()` picks per table at render
+time: tabulate's uniform output for narrow tables (max row width ≤
+threshold), the `_human_align` ragged-last variant for wide ones.
+Default threshold 120 — the print-width shared by Black, JetBrains, and
+`glow`.  In this repo: README's tool table lands wide (~250-char rows,
+ragged); `docs/frontmatter-standard.md`'s protected-keys table lands
+narrow (~98-char rows, uniform).
+
+Endorsed but never landed upstream: `wooorm` proposed exactly this
+chooser in `remarkjs/remark-gfm#46` (Jan 2023): *"There are currently
+two ways to display tables.  I can see 'dynamically' switching between
+them as an improvement."*  The two display modes already exist as the
+`alignDelimiters` boolean in `markdown-table`; the heuristic is the
+new piece.
+
+### Drift relink-gate after AST-changed-but-behavior-same edits
+
+When a code change alters an anchored symbol's AST (adding a class
+attribute, reordering methods, splitting a function body) without
+changing its semantic meaning, `drift check` reports STALE — the AST
+fingerprint moved even though the prose is still accurate.  The
+relink-gate exists for exactly this case:
+
+1. `drift link <doc-path>` — refuses, prints the doc section and
+   current code side-by-side for review.
+2. Read both; confirm the doc's prose is still factual.
+3. `drift link <doc-path> --doc-is-still-accurate` — refreshes the
+   `sig:` hash in `drift.lock`.
+4. `drift check` — verifies clean.
+
+Skip the review step at your peril.  Drift can't tell a cosmetic
+refactor from a real behavioral edit; the gate forces explicit ack
+that the prose still describes the code.  We exercised this when
+hoisting `FMEntries.PROTECTED_ORDER` — the class's AST changed (new
+attribute) but its protected-keys behavior didn't.
+
 ### Tabulate + a TOML registry collapses the description-ergonomics tax
 
 Earlier draft: "cog forces description prose out of the README into a
@@ -203,6 +247,45 @@ would benefit from cog derivation:
 
 Adopting cog there is a follow-up; the helper plumbing
 (`render_tool_table`, tabulate, TOML registry) generalizes.
+
+## Anti-patterns to avoid
+
+The shared shape: ask of any drift gate, *what is the cheapest action
+that makes this pass, and is that action sufficient?*  Gates whose
+cheapest passing action also happens to be the right thing are
+satisficing-resistant.  Gates whose cheapest pass is `touch` or
+"acknowledge and dismiss" are not.
+
+- **Recency-only drift gates** — assertions like "doc must be modified
+  within N days" can be satisfied by `touch docs/foo.md` or any
+  no-op edit.  They produce the cognitive exercise of a check (the
+  agent goes through the motions) without the reality exercise of
+  one (nothing was verified against source).  Use AST-fingerprint
+  consistency checks (Drift's `sig:`) or content-derived equality
+  (`cog --check`) instead — both fail unless the source actually
+  matches the prose.
+- **Line-number references in code citations.**  `path:line` rots on
+  the first edit; CLAUDE.md enforces `path#Symbol` repo-wide.
+- **Inline cog markers inside markdown table cells.**  GFM spec §4.10
+  ("the table is broken at the first empty line, or beginning of
+  another block-level structure") forbids it — HTML-comment blocks
+  are block-level structures.  Use outer BEGIN/END markers flanking
+  the entire table; cog regenerates the whole table as a unit.
+- **Whole-document reformatters (`prettier`, `mdformat` default) for
+  table-only fixes.**  They reformat all prose and would re-pad the
+  cog-trimmed tables that `_human_align` deliberately trimmed.  Use
+  targeted helpers, not document-wide tools.
+- **Git-native metadata (`git notes`, commit trailers,
+  `.gitattributes`, `git subtree`) for vendor-source pinning.**  None
+  survive the round trip cleanly.  Co-locate the pin with the file
+  as an HTML comment block (Renovate, vendir, peru all converge on
+  this shape).
+- **Trusting agent reports of upstream state without verification.**
+  Agents condense; the condensation can be wrong (misclaimed
+  Apache-2.0 license, stale Renovate field name, regex syntax that
+  differs between Python and re2).  Verify with `gh api`,
+  `npx <tool> --version`, or render output locally before committing
+  to a claim about upstream.
 
 ## Tooling we have not adopted yet but would help
 
