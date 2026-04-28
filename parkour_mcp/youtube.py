@@ -479,6 +479,19 @@ class Window:
     segments: tuple[Segment, ...]
 
 
+@dataclass(frozen=True)
+class Chapter:
+    """A creator-set or auto-detected video chapter.
+
+    Sourced from yt-dlp's ``info["chapters"]`` array. Used to render
+    section-style headings in the compact transcript output and as a
+    filter dimension on the Tantivy index.
+    """
+    start_time: float
+    end_time: float
+    title: str
+
+
 # Window coalescing band: target ~30s, with a [25, 35] tolerance band where
 # we look for natural pause boundaries. Matches WhisperX Cut & Merge: cap
 # at the upper bound, but prefer cuts at the largest pause within the band
@@ -684,9 +697,17 @@ def _render_absolute(windows: list[Window]) -> str:
     return "\n".join(lines)
 
 
-def _render_compact(windows: list[Window]) -> str:
+def _render_compact(
+    windows: list[Window],
+    chapters: tuple[Chapter, ...] = (),
+) -> str:
     """Default rendering: anchor per window, segments on own lines, outlier
     pause markers between segments, blank lines between windows.
+
+    When ``chapters`` is non-empty, emits ``## [MM:SS] Title`` headings
+    before the first window in each chapter — the heading and the
+    window's anchor both render so the structural marker (anchor) and
+    semantic marker (chapter heading) stay consistent across the body.
 
     Outlier detection runs over the FULL transcript so the rolling median
     is stable; per-window detection would oscillate on short windows.
@@ -698,6 +719,7 @@ def _render_compact(windows: list[Window]) -> str:
 
     all_segments = [s for w in windows for s in w.segments]
     outliers = _detect_outlier_gaps(all_segments)
+    chapter_marks = _build_chapter_marks(windows, chapters)
 
     # Map (window_idx, in_window_idx) -> bool by walking the flat sequence
     flat_idx = 0
@@ -711,6 +733,9 @@ def _render_compact(windows: list[Window]) -> str:
     for wi, w in enumerate(windows):
         if wi > 0:
             lines.append("")  # blank line between windows
+        if wi in chapter_marks:
+            lines.append(f"## [{_mmss(w.start)}] {chapter_marks[wi]}")
+            lines.append("")
         lines.append(f"[{_mmss(w.start)}]")
         n = len(w.segments)
         for si, seg in enumerate(w.segments):
@@ -742,15 +767,22 @@ def render_transcript(
     windows: list[Window],
     *,
     mode: TimestampMode = "compact",
+    chapters: tuple[Chapter, ...] = (),
 ) -> str:
-    """Render coalesced windows in the requested timestamp mode."""
+    """Render coalesced windows in the requested timestamp mode.
+
+    Chapters are only consumed by the ``compact`` mode; the other modes
+    are oriented at programmatic consumption (``structured``) or
+    timestamp-precise reading (``absolute``) where chapter headings
+    would interrupt the line cadence.
+    """
     if mode == "none":
         return _render_flat(windows)
     if mode == "absolute":
         return _render_absolute(windows)
     if mode == "structured":
         return _render_structured(windows)
-    return _render_compact(windows)
+    return _render_compact(windows, chapters=chapters)
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +810,7 @@ class _TranscriptEntry:
 
     __slots__ = (
         "url", "video_id", "language_code", "is_generated",
-        "segments", "windows", "chunking_strategy", "group",
+        "segments", "windows", "chapters", "chunking_strategy", "group",
         "fetcher", "fallback_from",
         "_tantivy_index", "_built",
     )
@@ -795,11 +827,14 @@ class _TranscriptEntry:
         Python-side ``windows`` tuple keyed by ``idx``. Both
         ``start_seconds`` and ``end_seconds`` are fast fields so range
         queries can skip the inverted index and ``order_by_field`` works
-        for time-ordered results.
+        for time-ordered results. ``chapter`` lets callers scope search
+        to a named chapter via a query parsed against the same default
+        tokenizer as ``body``.
         """
         if cls._SCHEMA is None:
             builder = tantivy.SchemaBuilder()
             builder.add_text_field("body", stored=False)
+            builder.add_text_field("chapter", stored=False)
             builder.add_unsigned_field("idx", stored=True)
             builder.add_float_field("start_seconds", indexed=True, fast=True)
             builder.add_float_field("end_seconds", indexed=True, fast=True)
@@ -818,6 +853,7 @@ class _TranscriptEntry:
         group: Optional[str] = None,
         fetcher: str = "youtube-transcript-api",
         fallback_from: Optional[str] = None,
+        chapters: tuple[Chapter, ...] = (),
     ):
         self.url = url
         self.video_id = video_id
@@ -825,6 +861,7 @@ class _TranscriptEntry:
         self.is_generated = is_generated
         self.segments = segments
         self.windows = windows
+        self.chapters = chapters
         self.chunking_strategy = chunking_strategy
         self.group = group
         self.fetcher = fetcher
@@ -842,7 +879,13 @@ class _TranscriptEntry:
         return self._built
 
     def _ensure_built(self) -> None:
-        """Build the Tantivy index over windows; idempotent."""
+        """Build the Tantivy index over windows; idempotent.
+
+        Each window is tagged with the title of the chapter that contains
+        its start time (or empty string if it falls outside any chapter).
+        Chapter scoping is then a tokenized text query on that field
+        rather than an exact-match keyword.
+        """
         if self._built or not self.windows:
             return
         schema = self._get_schema()
@@ -850,8 +893,10 @@ class _TranscriptEntry:
         writer = self._tantivy_index.writer()
         for i, window in enumerate(self.windows):
             body_text = " ".join(seg.text for seg in window.segments)
+            chapter_title = _window_chapter_title(window, self.chapters)
             writer.add_document(tantivy.Document(
                 body=body_text,
+                chapter=chapter_title,
                 idx=i,
                 start_seconds=float(window.start),
                 end_seconds=float(window.end),
@@ -866,26 +911,28 @@ class _TranscriptEntry:
         *,
         start_seconds: Optional[float] = None,
         end_seconds: Optional[float] = None,
+        chapter: Optional[str] = None,
         order: str = "score",
         limit: int = 50,
     ) -> tuple[list[int], list[str]]:
-        """BM25 + time-range search over windows.
+        """BM25 + time-range + chapter search over windows.
 
         Returns ``(matched_window_indices, parse_warnings)``. The
         warnings list mirrors ``_pipeline.py#_CacheEntry.search`` and
         carries any ``parse_query_lenient`` errors for the dispatcher to
         surface in frontmatter.
 
-        Composition rules:
-        - ``query_str`` only: BM25 over body, ranked by score.
-        - range only: all windows whose ``[start, end]`` interval
-          overlaps ``[start_seconds, end_seconds)``.
-        - both: ``BooleanQuery`` of body AND range, ranked by score.
-        - neither: matches all windows (``Query.all_query()``).
+        All filters compose via ``BooleanQuery`` MUST clauses:
+        - ``query_str`` parses against the ``body`` field.
+        - ``chapter`` parses against the ``chapter`` field, also via
+          ``parse_query_lenient`` so callers can write the same query
+          syntax (phrase, fuzzy, AND/OR) they use for body queries.
+        - ``start_seconds`` / ``end_seconds`` translate to half-open
+          range queries on the fast fields.
 
         ``order='time'`` sorts by ``start_seconds`` ascending instead of
-        BM25 score; only meaningful when a query is set, but harmless
-        otherwise (results are already chronological).
+        BM25 score; only meaningful when a query or filter narrows the
+        result set, but harmless otherwise.
         """
         self._ensure_built()
         if not self._tantivy_index or not self.windows:
@@ -900,7 +947,15 @@ class _TranscriptEntry:
                 query_str, default_field_names=["body"],
             )
             if errors:
-                warnings = [str(e) for e in errors]
+                warnings.extend(str(e) for e in errors)
+
+        chapter_query = None
+        if chapter:
+            chapter_query, errors = self._tantivy_index.parse_query_lenient(
+                chapter, default_field_names=["chapter"],
+            )
+            if errors:
+                warnings.extend(f"chapter filter: {e}" for e in errors)
 
         # Window overlaps [start, end) iff start_seconds < end AND end_seconds > start.
         # Half-open semantics match how Tantivy range_query treats inclusive
@@ -926,15 +981,20 @@ class _TranscriptEntry:
                 ),
             ))
 
-        if body_query is not None and range_clauses:
-            clauses = [(tantivy.Occur.Must, body_query)] + range_clauses
-            query = tantivy.Query.boolean_query(clauses)
-        elif body_query is not None:
-            query = body_query
-        elif range_clauses:
-            query = tantivy.Query.boolean_query(range_clauses)
-        else:
+        # Compose: walk all clauses; if any are present, BooleanQuery; else all.
+        clauses: list = []
+        if body_query is not None:
+            clauses.append((tantivy.Occur.Must, body_query))
+        if chapter_query is not None:
+            clauses.append((tantivy.Occur.Must, chapter_query))
+        clauses.extend(range_clauses)
+
+        if not clauses:
             query = tantivy.Query.all_query()
+        elif len(clauses) == 1 and clauses[0][0] == tantivy.Occur.Must:
+            query = clauses[0][1]
+        else:
+            query = tantivy.Query.boolean_query(clauses)
 
         searcher = self._tantivy_index.searcher()
         if order == "time":
@@ -1134,6 +1194,76 @@ def _fetch_transcript_sync(video_id: str, languages: list[str]):
     return api.fetch(video_id, languages=languages)
 
 
+def _fetch_video_chapters_sync(video_id: str) -> list[Chapter]:
+    """Fetch the video's chapter list via yt-dlp.
+
+    Returns an empty list when the video has no chapters, when yt-dlp
+    can't extract, or when the response shape is unexpected. Chapter
+    fetch is best-effort — failure here degrades the transcript output
+    (no chapter headings) but never blocks the transcript itself.
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        info = _extract_video_info_sync(url)
+    except Exception:
+        return []
+    if not isinstance(info, dict):
+        return []
+    raw = info.get("chapters") or []
+    chapters: list[Chapter] = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        title = c.get("title")
+        start = c.get("start_time")
+        end = c.get("end_time")
+        if title is None or start is None or end is None:
+            continue
+        try:
+            chapters.append(Chapter(
+                start_time=float(start),
+                end_time=float(end),
+                title=str(title),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return chapters
+
+
+def _window_chapter_title(window: Window, chapters: tuple[Chapter, ...]) -> str:
+    """Return the chapter title containing ``window.start``, or empty.
+
+    A window belongs to the chapter whose half-open ``[start_time,
+    end_time)`` interval contains the window's start. Windows preceding
+    the first chapter (or falling between chapters in malformed data)
+    return the empty string and won't match a ``chapter=`` filter.
+    """
+    for ch in chapters:
+        if ch.start_time <= window.start < ch.end_time:
+            return ch.title
+    return ""
+
+
+def _build_chapter_marks(
+    windows: list[Window], chapters: tuple[Chapter, ...],
+) -> dict[int, str]:
+    """Map window index → chapter title for the FIRST window in each chapter.
+
+    Iterates chapters in order, pairing each with the first window whose
+    start crosses (or equals) the chapter's start_time. ``setdefault``
+    guards against multiple chapters resolving to the same window, which
+    would happen if chapter boundaries are tighter than the window
+    cadence; the earliest chapter wins.
+    """
+    marks: dict[int, str] = {}
+    for ch in chapters:
+        for i, w in enumerate(windows):
+            if w.start >= ch.start_time:
+                marks.setdefault(i, ch.title)
+                break
+    return marks
+
+
 # ---------------------------------------------------------------------------
 # Transcript: yt-dlp fallback path
 # ---------------------------------------------------------------------------
@@ -1268,6 +1398,7 @@ def _build_transcript_entry(
     fetched,
     fetcher: str = "youtube-transcript-api",
     fallback_from: Optional[str] = None,
+    chapters: tuple[Chapter, ...] = (),
 ) -> _TranscriptEntry:
     """Construct an entry from a fetched-transcript object.
 
@@ -1304,6 +1435,7 @@ def _build_transcript_entry(
         is_generated=is_auto,
         segments=segments,
         windows=windows,
+        chapters=chapters,
         chunking_strategy=chunking_strategy,
         group=f"yt:{video_id}",
         fetcher=fetcher,
@@ -1356,6 +1488,14 @@ def _base_transcript_fm(entry: _TranscriptEntry) -> FMEntries:
         "chunking_strategy": entry.chunking_strategy,
         "trust": _TRUST_ADVISORY,
     })
+    if entry.chapters:
+        # Render as "MM:SS Title" so the agent sees both anchor and label
+        # without having to cross-reference; the structural unit is the
+        # whole list, not the individual entries, so this stays in
+        # frontmatter rather than in the fenced body.
+        fm["chapters"] = [
+            f"{_mmss(c.start_time)} {c.title}" for c in entry.chapters
+        ]
     if entry.fallback_from:
         note = _FALLBACK_NOTES.get(entry.fallback_from)
         if note is None:
@@ -1372,7 +1512,9 @@ def _render_full_transcript_response(
     timestamps: TimestampMode,
 ) -> str:
     """Render the entire transcript (matches step 2 behavior)."""
-    body = render_transcript(list(entry.windows), mode=timestamps)
+    body = render_transcript(
+        list(entry.windows), mode=timestamps, chapters=entry.chapters,
+    )
     fm_entries = _base_transcript_fm(entry)
     fm_entries["total_segments"] = len(entry.segments)
     fm_entries["duration"] = _format_duration(
@@ -1403,6 +1545,10 @@ def _render_window_retrieval_response(
             unknown.append(i)
 
     matched = [entry.windows[i] for i in in_order]
+    # Window retrieval pulls a non-contiguous slice of the transcript;
+    # chapter headings would render mid-list at confusing positions, so
+    # they're suppressed for this view. The full-transcript view is the
+    # right place to consult chapter structure.
     body = render_transcript(matched, mode=timestamps)
 
     fm_entries = _base_transcript_fm(entry)
@@ -1436,24 +1582,32 @@ def _render_search_response(
     query: Optional[str],
     start_seconds: Optional[float],
     end_seconds: Optional[float],
+    chapter: Optional[str],
     order: str,
     timestamps: TimestampMode,
 ) -> str:
-    """Render BM25 / time-range / combined search results."""
+    """Render BM25 / time-range / chapter / combined search results."""
     matched_indices, warnings = entry.search(
         query,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
+        chapter=chapter,
         order=order,
     )
 
     matched_windows = [entry.windows[i] for i in matched_indices]
+    # Search results are non-contiguous; suppress chapter headings here
+    # for the same reason as window retrieval. The chapter that contains
+    # each match is recoverable from the entry's chapters list paired
+    # with the matched window's timestamp.
     body = render_transcript(matched_windows, mode=timestamps)
 
     fm_entries = _base_transcript_fm(entry)
     fm_entries["matched_windows"] = matched_indices
     if query is not None:
         fm_entries["search"] = query
+    if chapter is not None:
+        fm_entries["chapter"] = chapter
     if start_seconds is not None:
         fm_entries["start_seconds"] = start_seconds
     if end_seconds is not None:
@@ -1474,6 +1628,12 @@ def _render_search_response(
             f"No windows match the time range. "
             f"Transcript spans 0..{int(last_end)} seconds."
         ))
+    elif chapter is not None and not matched_indices:
+        chapter_titles = ", ".join(c.title for c in entry.chapters) or "(none)"
+        fm_entries.append("note", (
+            f"No windows match the chapter filter. "
+            f"Available chapters: {chapter_titles}"
+        ))
 
     fm = _build_frontmatter(fm_entries)
     title = f"Transcript ({entry.language_code})"
@@ -1489,6 +1649,7 @@ async def _transcript(
     windows: Optional[list[int]] = None,
     start_seconds: Optional[float] = None,
     end_seconds: Optional[float] = None,
+    chapter: Optional[str] = None,
     order: str = "score",
 ) -> str:
     """Fetch / cache / render a YouTube transcript per the requested shape."""
@@ -1511,6 +1672,12 @@ async def _transcript(
     if entry is None:
         fetcher_name = "youtube-transcript-api"
         fallback_from: Optional[str] = None
+        # Chapter fetch runs concurrently with the transcript fetch — both
+        # are I/O-bound and independent. Chapters degrade silently on any
+        # failure (returns []), so the chapter task itself shouldn't raise.
+        chapters_task = asyncio.create_task(
+            asyncio.to_thread(_fetch_video_chapters_sync, video_id)
+        )
         try:
             fetched = await asyncio.to_thread(
                 _fetch_transcript_sync, video_id, languages,
@@ -1526,29 +1693,45 @@ async def _transcript(
                     PoTokenRequired, RequestBlocked,
                 )
             except ImportError:
+                chapters_task.cancel()
                 return _map_transcript_error(exc)
             if isinstance(exc, (RequestBlocked, PoTokenRequired)):
                 fetched = await _yt_dlp_transcript_fallback(video_id, languages)
                 if fetched is None:
+                    chapters_task.cancel()
                     return _map_transcript_error(exc)
                 fetcher_name = "yt-dlp (fallback)"
                 fallback_from = type(exc).__name__
             else:
+                chapters_task.cancel()
                 return _map_transcript_error(exc)
         if not list(fetched.snippets):
+            chapters_task.cancel()
             return "Error: Transcript fetched but contains no segments."
+        # Chapters are best-effort; await but tolerate any exception
+        try:
+            chapters_list = await chapters_task
+        except Exception:
+            chapters_list = []
+        chapters = tuple(chapters_list)
         entry = _build_transcript_entry(
             canonical_url, video_id, fetched,
             fetcher=fetcher_name,
             fallback_from=fallback_from,
+            chapters=chapters,
         )
         _transcript_cache.store(canonical_url, entry)
 
     if windows is not None:
         return _render_window_retrieval_response(entry, windows, timestamps)
-    if search or start_seconds is not None or end_seconds is not None:
+    if (
+        search
+        or chapter
+        or start_seconds is not None
+        or end_seconds is not None
+    ):
         return _render_search_response(
-            entry, search, start_seconds, end_seconds, order, timestamps,
+            entry, search, start_seconds, end_seconds, chapter, order, timestamps,
         )
     return _render_full_transcript_response(entry, timestamps)
 
@@ -1896,6 +2079,17 @@ async def youtube(
             "end_seconds does not match."
         ),
     )] = None,
+    chapter: Annotated[Optional[str], Field(
+        description=(
+            "For 'transcript': scope search to a chapter by title. "
+            "Parsed via the same query syntax as 'search=' so partial "
+            "matches and phrases work (e.g. chapter='intro' matches "
+            "'Introduction'). Composes with search and time-range "
+            "filters; incompatible with 'windows='. Available chapters "
+            "are listed in the frontmatter 'chapters:' field of a "
+            "non-filtered transcript fetch."
+        ),
+    )] = None,
     order: Annotated[Literal["score", "time"], Field(
         description=(
             "For 'transcript' search: 'score' (default) ranks by BM25 "
@@ -1939,10 +2133,13 @@ async def youtube(
                 "Error: 'search' and 'windows' are mutually exclusive."
             )
         if windows is not None and (
-            start_seconds is not None or end_seconds is not None
+            start_seconds is not None
+            or end_seconds is not None
+            or chapter is not None
         ):
             return (
-                "Error: 'windows' cannot be combined with time-range filters."
+                "Error: 'windows' cannot be combined with time-range or "
+                "chapter filters."
             )
         if (
             start_seconds is not None
@@ -1958,6 +2155,7 @@ async def youtube(
             windows=windows,
             start_seconds=start_seconds,
             end_seconds=end_seconds,
+            chapter=chapter,
             order=order,
         )
     if action == "channel":

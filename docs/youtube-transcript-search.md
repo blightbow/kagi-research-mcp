@@ -71,6 +71,7 @@ Tantivy index builds lazily on first `search()` call so the basic
 | Field | Type | Stored | Indexed | Fast | Tokenizer | Notes |
 |---|---|---|---|---|---|---|
 | `body` | text | no | yes | no | `default` | Concatenated segment text within the window |
+| `chapter` | text | no | yes | no | `default` | Title of the chapter containing the window's start time, or empty |
 | `idx` | unsigned | yes | yes | no | (n/a) | Window index. The only field retrieved from search results |
 | `start_seconds` | f64 | no | yes | yes | (n/a) | Window start; `fast=True` enables range queries and time-ordering |
 | `end_seconds` | f64 | no | yes | yes | (n/a) | Window end; same |
@@ -82,10 +83,11 @@ Schema decisions:
   `"prompt"` and `"prompts"` if they want either. Using a different
   tokenizer here would create a confusing inconsistency between
   `WebFetchIncisive`'s `search=` and `Youtube`'s `transcript:search=`.
-- **No `heading`/`chapter` field in step 3**. Chapters require yt-dlp
-  metadata, which the transcript-fetching path doesn't traverse.
-  Deferred to a follow-up commit that merges yt-dlp metadata into the
-  transcript entry.
+- **`chapter` is parsed via `parse_query_lenient`**, same as `body`, so
+  callers can use the same query syntax (phrase, fuzzy, AND/OR) on
+  chapter titles as on transcript text. `chapter="intro"` matches
+  windows whose chapter title contains "intro" via the default
+  tokenizer.
 - **`idx` is the only stored field**. Window text, timestamps, and
   ancestry are reconstructed from the Python-side `windows` tuple keyed
   by `idx`. Mirrors `_pipeline.py#_CacheEntry` exactly.
@@ -298,15 +300,41 @@ The `_FALLBACK_NOTES` map in `youtube.py` carries a short explanation
 of each recovery path into the response frontmatter so the LLM caller
 sees what was bypassed and why recovery was possible at all.
 
+## Chapter integration
+
+Chapter data comes from yt-dlp's ``info["chapters"]`` array. The
+transcript action launches a chapter-fetch task in parallel with the
+transcript fetch via ``asyncio.create_task``; the chapter task is
+best-effort and degrades silently to ``[]`` on any failure (yt-dlp
+unreachable, malformed entries, etc.). Wall-clock cost is dominated by
+the slower of the two parallel fetches, so chapters add no measurable
+latency.
+
+Chapter titles render in three places:
+
+1. **Frontmatter ``chapters:`` list** on a non-filtered transcript fetch,
+   formatted as ``MM:SS Title`` for direct readability.
+2. **``## [MM:SS] Title`` headings** in compact-mode body, emitted before
+   the first window whose start crosses each chapter boundary. Window
+   anchors (``[MM:SS]``) still appear; the heading provides semantic
+   structure on top of the structural anchors.
+3. **Tantivy ``chapter`` field** on each window doc, tagged with the
+   title of the containing chapter. Enables ``chapter=`` filtering via
+   a parsed query that composes with ``search=`` and time-range filters
+   in a ``BooleanQuery`` MUST chain.
+
+The compact-mode headings only render in the full-transcript view.
+Window retrieval (``windows=``) and search results render
+non-contiguous slices where mid-list chapter headings would land at
+confusing positions; those views suppress the headings entirely. The
+frontmatter ``chapters:`` list is still present for chapter discovery.
+
+When ``chapter=`` filters to no matches, the response emits a
+frontmatter ``note:`` listing the available chapter titles so the LLM
+can retry with a valid filter rather than guessing.
+
 ## Deferred to follow-up commits
 
-- **Chapter integration**. Needs a yt-dlp metadata fetch alongside the
-  transcript fetch, with chapter boundaries used as anchor-clock resets
-  in compact rendering and as a faceted `chapter` text field in the
-  Tantivy schema. Schema is write-once; adding a `chapter` field means
-  a schema version bump if we ever persist on disk. Step 3 deliberately
-  excludes this so the schema doesn't need to be revisited within the
-  same series of commits.
 - **Multi-video index** for cross-corpus search. Per-video index is
   simpler and matches `_PageCache`. Cross-corpus needs a `video_id`
   keyword field and a different cache shape. Defer until a concrete use

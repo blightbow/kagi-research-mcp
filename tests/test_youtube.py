@@ -8,6 +8,12 @@ import tantivy
 import parkour_mcp.youtube  # noqa: F401
 _yt_module = sys.modules["parkour_mcp.youtube"]
 
+# Capture the real chapter-fetch function before any autouse fixture
+# substitutes a stub. Tests that exercise the parsing logic call this
+# saved reference directly so they don't go through the module attribute
+# the autouse fixture has replaced.
+_REAL_FETCH_CHAPTERS = _yt_module._fetch_video_chapters_sync
+
 
 @pytest.fixture(autouse=True)
 def _clear_transcript_cache():
@@ -21,9 +27,26 @@ def _clear_transcript_cache():
     yield
     _yt_module._transcript_cache.clear()
 
+
+@pytest.fixture(autouse=True)
+def _mock_chapters_offline(monkeypatch):
+    """Stub the chapter fetcher to return [] by default.
+
+    The transcript action launches a concurrent yt-dlp call to fetch
+    chapter metadata. Without a stub, every test that exercises the
+    transcript action would hit the live network for chapter data.
+    Tests specifically exercising chapter integration override this
+    by monkeypatching ``_fetch_video_chapters_sync`` again.
+    """
+    monkeypatch.setattr(
+        _yt_module, "_fetch_video_chapters_sync", lambda _: [],
+    )
+
 from parkour_mcp.youtube import (  # noqa: E402
+    Chapter,
     Segment,
     Window,
+    _build_chapter_marks,
     _captions_summary,
     _detect_outlier_gaps,
     _detect_youtube_url,
@@ -34,6 +57,7 @@ from parkour_mcp.youtube import (  # noqa: E402
     _mmss,
     _punctuation_density,
     _segment_ends_sentence,
+    _window_chapter_title,
     coalesce_windows,
     render_transcript,
     youtube,
@@ -1797,6 +1821,253 @@ class TestTranscriptCacheBehavior:
         )
         # Only one fetch — second call hit cache
         assert fetch_count["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Chapter integration: helpers, rendering, fetch, dispatch
+# ---------------------------------------------------------------------------
+
+class TestChapterHelpers:
+    def test_window_chapter_title_inside(self):
+        ch = (
+            Chapter(start_time=0.0, end_time=60.0, title="Intro"),
+            Chapter(start_time=60.0, end_time=180.0, title="Demo"),
+        )
+        # Window starting at 30s is inside Intro
+        w = Window(start=30.0, end=55.0, segments=())
+        assert _window_chapter_title(w, ch) == "Intro"
+        # Window starting at 60s is inside Demo (half-open)
+        w = Window(start=60.0, end=90.0, segments=())
+        assert _window_chapter_title(w, ch) == "Demo"
+
+    def test_window_chapter_title_outside(self):
+        # No chapters → empty string
+        assert _window_chapter_title(
+            Window(start=10.0, end=20.0, segments=()), (),
+        ) == ""
+
+    def test_window_chapter_title_after_last(self):
+        ch = (Chapter(start_time=0.0, end_time=60.0, title="Only"),)
+        # Window starting after the last chapter ends → empty
+        w = Window(start=100.0, end=130.0, segments=())
+        assert _window_chapter_title(w, ch) == ""
+
+    def test_build_chapter_marks(self):
+        windows = [
+            Window(start=0.0, end=30.0, segments=()),
+            Window(start=30.0, end=60.0, segments=()),
+            Window(start=60.0, end=90.0, segments=()),
+        ]
+        chapters = (
+            Chapter(start_time=0.0, end_time=60.0, title="First"),
+            Chapter(start_time=60.0, end_time=120.0, title="Second"),
+        )
+        marks = _build_chapter_marks(windows, chapters)
+        assert marks == {0: "First", 2: "Second"}
+
+    def test_build_chapter_marks_no_match(self):
+        windows = [Window(start=0.0, end=10.0, segments=())]
+        chapters = (Chapter(start_time=100.0, end_time=200.0, title="Late"),)
+        marks = _build_chapter_marks(windows, chapters)
+        assert marks == {}
+
+
+class TestRenderCompactWithChapters:
+    def test_compact_emits_chapter_headings(self):
+        windows = [
+            Window(start=0.0, end=30.0, segments=(
+                Segment(0.0, 5.0, "Welcome"),
+            )),
+            Window(start=60.0, end=90.0, segments=(
+                Segment(60.0, 5.0, "Demo content"),
+            )),
+        ]
+        chapters = (
+            Chapter(start_time=0.0, end_time=60.0, title="Intro"),
+            Chapter(start_time=60.0, end_time=120.0, title="Demo"),
+        )
+        out = render_transcript(windows, mode="compact", chapters=chapters)
+        assert "## [00:00] Intro" in out
+        assert "## [01:00] Demo" in out
+        # Window anchors still present
+        assert "[00:00]" in out
+        assert "[01:00]" in out
+
+    def test_compact_without_chapters_no_headings(self):
+        windows = [
+            Window(start=0.0, end=30.0, segments=(Segment(0.0, 5.0, "Hi"),)),
+        ]
+        out = render_transcript(windows, mode="compact")
+        assert "##" not in out
+
+    def test_chapters_only_for_compact_mode(self):
+        windows = [
+            Window(start=0.0, end=10.0, segments=(Segment(0.0, 5.0, "Hi"),)),
+        ]
+        chapters = (Chapter(start_time=0.0, end_time=60.0, title="Intro"),)
+        # Other modes ignore chapters — they target programmatic / per-line
+        # consumption where chapter headings would interrupt cadence.
+        for mode in ("absolute", "none", "structured"):
+            out = render_transcript(windows, mode=mode, chapters=chapters)
+            assert "## [" not in out
+
+
+class TestFetchVideoChaptersSync:
+    def test_parses_well_formed_chapters(self, monkeypatch):
+        info = {
+            "chapters": [
+                {"start_time": 0.0, "end_time": 60.0, "title": "Intro"},
+                {"start_time": 60.0, "end_time": 180.0, "title": "Demo"},
+            ],
+        }
+        monkeypatch.setattr(
+            _yt_module, "_extract_video_info_sync", lambda _: info,
+        )
+        # Use the pre-fixture reference to bypass the autouse stub
+        chapters = _REAL_FETCH_CHAPTERS("vid")
+        assert len(chapters) == 2
+        assert chapters[0].title == "Intro"
+        assert chapters[0].start_time == 0.0
+        assert chapters[0].end_time == 60.0
+
+    def test_skips_malformed_entries(self, monkeypatch):
+        info = {
+            "chapters": [
+                {"start_time": 0.0, "end_time": 60.0, "title": "Good"},
+                {"start_time": 60.0},  # missing title and end_time
+                "not a dict",
+                {"title": "no times"},  # missing both times
+            ],
+        }
+        monkeypatch.setattr(
+            _yt_module, "_extract_video_info_sync", lambda _: info,
+        )
+        chapters = _REAL_FETCH_CHAPTERS("vid")
+        assert len(chapters) == 1
+        assert chapters[0].title == "Good"
+
+    def test_empty_chapters_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            _yt_module, "_extract_video_info_sync",
+            lambda _: {"chapters": []},
+        )
+        assert _REAL_FETCH_CHAPTERS("vid") == []
+
+    def test_extract_failure_returns_empty(self, monkeypatch):
+        def _boom(_):
+            raise RuntimeError("yt-dlp blew up")
+        monkeypatch.setattr(_yt_module, "_extract_video_info_sync", _boom)
+        assert _REAL_FETCH_CHAPTERS("vid") == []
+
+
+class TestChaptersInTranscriptResponse:
+    @pytest.mark.asyncio
+    async def test_chapters_surface_in_frontmatter(self, monkeypatch):
+        chapters_data = [
+            Chapter(start_time=0.0, end_time=10.0, title="Intro"),
+            Chapter(start_time=10.0, end_time=20.0, title="Outro"),
+        ]
+        # Override the offline chapter stub for this test
+        monkeypatch.setattr(
+            _yt_module, "_fetch_video_chapters_sync", lambda _: chapters_data,
+        )
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(_ZOO_SNIPPETS, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "chapters:" in result
+        assert "00:00 Intro" in result
+        assert "00:10 Outro" in result
+        # Compact-mode body emits chapter heading at the matching window
+        assert "## [00:01] Intro" in result or "## [00:00] Intro" in result
+
+    @pytest.mark.asyncio
+    async def test_chapter_filter_scopes_search(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=3)
+        chapters_data = [
+            Chapter(start_time=0.0, end_time=32.0, title="Intro"),
+            Chapter(start_time=32.0, end_time=64.0, title="Middle"),
+            Chapter(start_time=64.0, end_time=200.0, title="End"),
+        ]
+        monkeypatch.setattr(
+            _yt_module, "_fetch_video_chapters_sync", lambda _: chapters_data,
+        )
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            chapter="Middle",
+        )
+        assert "chapter: Middle" in result
+        assert "matched_windows:" in result
+
+    @pytest.mark.asyncio
+    async def test_chapter_filter_no_matches_emits_note(self, monkeypatch):
+        snippets = _multi_window_snippets(n_windows=2)
+        chapters_data = [
+            Chapter(start_time=0.0, end_time=64.0, title="Intro"),
+        ]
+        monkeypatch.setattr(
+            _yt_module, "_fetch_video_chapters_sync", lambda _: chapters_data,
+        )
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(snippets, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            chapter="NonexistentChapter",
+        )
+        # Note lists the available chapters so the LLM can retry with a
+        # valid filter rather than guessing
+        assert "Available chapters" in result
+        assert "Intro" in result
+
+    @pytest.mark.asyncio
+    async def test_windows_with_chapter_rejected(self):
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            windows=[0],
+            chapter="Intro",
+        )
+        assert "Error" in result
+        assert "windows" in result.lower()
+        assert "chapter" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_chapter_fetch_failure_degrades_silently(self, monkeypatch):
+        def boom(_):
+            raise RuntimeError("network died")
+        monkeypatch.setattr(_yt_module, "_fetch_video_chapters_sync", boom)
+
+        def fake_fetch(video_id, languages):
+            del video_id, languages
+            return _FakeFetchedTranscript(_ZOO_SNIPPETS, "en", is_generated=False)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        # Transcript content present
+        assert "All right, so here we are" in result
+        # No chapters in frontmatter
+        assert "\nchapters:" not in result
 
 
 # ---------------------------------------------------------------------------
