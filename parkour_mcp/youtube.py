@@ -710,9 +710,11 @@ def _render_compact(
     pause markers between segments, blank lines between windows.
 
     When ``chapters`` is non-empty, emits ``## [MM:SS] Title`` headings
-    before the first window in each chapter — the heading and the
-    window's anchor both render so the structural marker (anchor) and
-    semantic marker (chapter heading) stay consistent across the body.
+    before the first window in each chapter — using the chapter's own
+    ``start_time`` rather than the window's anchor so closely-spaced
+    chapters that share a window stack with distinct timestamps. The
+    structural anchor (window's ``[MM:SS]`` line) renders below the
+    heading(s) so the reader can still see where window content begins.
 
     Outlier detection runs over the FULL transcript so the rolling median
     is stable; per-window detection would oscillate on short windows.
@@ -738,8 +740,9 @@ def _render_compact(
     for wi, w in enumerate(windows):
         if wi > 0:
             lines.append("")  # blank line between windows
+        for ch in chapter_marks.get(wi, ()):
+            lines.append(f"## [{_mmss(ch.start_time)}] {ch.title}")
         if wi in chapter_marks:
-            lines.append(f"## [{_mmss(w.start)}] {chapter_marks[wi]}")
             lines.append("")
         lines.append(f"[{_mmss(w.start)}]")
         n = len(w.segments)
@@ -1251,20 +1254,22 @@ def _window_chapter_title(window: Window, chapters: tuple[Chapter, ...]) -> str:
 
 def _build_chapter_marks(
     windows: list[Window], chapters: tuple[Chapter, ...],
-) -> dict[int, str]:
-    """Map window index → chapter title for the FIRST window in each chapter.
+) -> dict[int, list[Chapter]]:
+    """Map window index → ordered chapters that begin in or before that window.
 
-    Iterates chapters in order, pairing each with the first window whose
-    start crosses (or equals) the chapter's start_time. ``setdefault``
-    guards against multiple chapters resolving to the same window, which
-    would happen if chapter boundaries are tighter than the window
-    cadence; the earliest chapter wins.
+    Each chapter pairs with the first window whose ``start`` crosses
+    (or equals) the chapter's ``start_time``. When multiple chapters
+    resolve to the same window — typical when chapter boundaries are
+    tighter than the window cadence (e.g. two chapters 19s apart in a
+    transcript with 30s windows) — the renderer stacks both headings
+    rather than dropping the later ones. Chapters preserve their input
+    order in the returned list, so headings render chronologically.
     """
-    marks: dict[int, str] = {}
+    marks: dict[int, list[Chapter]] = {}
     for ch in chapters:
         for i, w in enumerate(windows):
             if w.start >= ch.start_time:
-                marks.setdefault(i, ch.title)
+                marks.setdefault(i, []).append(ch)
                 break
     return marks
 

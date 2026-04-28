@@ -1867,13 +1867,46 @@ class TestChapterHelpers:
             Chapter(start_time=60.0, end_time=120.0, title="Second"),
         )
         marks = _build_chapter_marks(windows, chapters)
-        assert marks == {0: "First", 2: "Second"}
+        # Each window maps to a list of chapters; closely-spaced chapters
+        # stack rather than overwrite.
+        assert list(marks.keys()) == [0, 2]
+        assert [c.title for c in marks[0]] == ["First"]
+        assert [c.title for c in marks[2]] == ["Second"]
 
     def test_build_chapter_marks_no_match(self):
         windows = [Window(start=0.0, end=10.0, segments=())]
         chapters = (Chapter(start_time=100.0, end_time=200.0, title="Late"),)
         marks = _build_chapter_marks(windows, chapters)
         assert marks == {}
+
+    def test_closely_spaced_chapters_stack_in_same_window(self):
+        # Regression for UAT bug: two chapters 19s apart both fall into
+        # the same ~30s window. The earlier (and later) implementation
+        # used setdefault on a single-title-per-window dict, silently
+        # dropping the later chapter. Both must now render.
+        windows = [
+            Window(start=0.0, end=30.0, segments=()),
+            Window(start=30.0, end=60.0, segments=()),
+            Window(start=60.0, end=90.0, segments=()),
+            Window(start=90.0, end=126.0, segments=()),
+            Window(start=126.0, end=156.0, segments=()),
+        ]
+        chapters = (
+            Chapter(start_time=0.0, end_time=19.0, title="Untitled Chapter 1"),
+            Chapter(start_time=19.0, end_time=103.0, title="What Is Spiciness"),
+            Chapter(start_time=103.0, end_time=122.0, title="The Scoville Scale"),
+            Chapter(start_time=122.0, end_time=200.0, title="Trinidad Moruga Scorpion"),
+        )
+        marks = _build_chapter_marks(windows, chapters)
+        # Chapters 1 and 2 each fall into their own window
+        assert [c.title for c in marks[0]] == ["Untitled Chapter 1"]
+        assert [c.title for c in marks[1]] == ["What Is Spiciness"]
+        # Chapters 3 and 4 both first-cross at window 4 (start=126).
+        # Both must appear, in order.
+        assert [c.title for c in marks[4]] == [
+            "The Scoville Scale",
+            "Trinidad Moruga Scorpion",
+        ]
 
 
 class TestRenderCompactWithChapters:
@@ -1891,11 +1924,36 @@ class TestRenderCompactWithChapters:
             Chapter(start_time=60.0, end_time=120.0, title="Demo"),
         )
         out = render_transcript(windows, mode="compact", chapters=chapters)
+        # Heading timestamps use chapter.start_time, not window.start
         assert "## [00:00] Intro" in out
         assert "## [01:00] Demo" in out
-        # Window anchors still present
+        # Window anchors still present below the headings
         assert "[00:00]" in out
         assert "[01:00]" in out
+
+    def test_compact_stacks_closely_spaced_chapters(self):
+        # Two chapters falling into the same window must both render,
+        # each with its own start_time as the heading timestamp.
+        windows = [
+            Window(start=0.0, end=30.0, segments=(
+                Segment(0.0, 5.0, "Welcome"),
+            )),
+            Window(start=126.0, end=156.0, segments=(
+                Segment(126.0, 5.0, "Later content"),
+            )),
+        ]
+        chapters = (
+            Chapter(start_time=103.0, end_time=122.0, title="The Scoville Scale"),
+            Chapter(start_time=122.0, end_time=200.0, title="Trinidad Moruga Scorpion"),
+        )
+        out = render_transcript(windows, mode="compact", chapters=chapters)
+        # Both headings present, with chapter-time stamps
+        assert "## [01:43] The Scoville Scale" in out
+        assert "## [02:02] Trinidad Moruga Scorpion" in out
+        # And they appear in chronological order (Scoville before Trinidad)
+        assert out.index("Scoville Scale") < out.index("Trinidad Moruga")
+        # Window anchor still renders, separately from the headings
+        assert "[02:06]" in out
 
     def test_compact_without_chapters_no_headings(self):
         windows = [
@@ -2080,8 +2138,9 @@ class TestChaptersInTranscriptResponse:
         assert "chapters:" in result
         assert "00:00 Intro" in result
         assert "00:10 Outro" in result
-        # Compact-mode body emits chapter heading at the matching window
-        assert "## [00:01] Intro" in result or "## [00:00] Intro" in result
+        # Compact-mode body emits chapter heading at the chapter's
+        # declared start_time (not the window's anchor)
+        assert "## [00:00] Intro" in result
 
     @pytest.mark.asyncio
     async def test_chapter_filter_scopes_search(self, monkeypatch):

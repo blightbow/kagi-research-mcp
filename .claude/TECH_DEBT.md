@@ -46,13 +46,6 @@ Acknowledged warnings and deferred fixes. Each entry includes the source, the is
 - **Why deferred**: Cross-language workflows on the same video are rare in practice (most callers want the default language). Including languages in the key would multiply cache entries per video and complicate the group-eviction key shape. Acceptable for v1.
 - **Mitigation**: Documented in `docs/youtube-transcript-search.md`. Callers needing a different language can clear the cache or hit yt-dlp directly.
 
-### Chapter heading time uses window start, not chapter start
-
-- **Location**: `parkour_mcp/youtube.py#_render_compact` and `_build_chapter_marks`.
-- **Issue**: When a chapter formally starts at e.g. 0:00 but the first transcript window starts at 0:01 (the first caption segment doesn't begin at 0:00), the rendered heading reads `## [00:01] Intro` rather than `## [00:00] Intro`. The heading time is the start of the window the chapter heading attaches to, not the chapter's own `start_time`.
-- **Why deferred**: Defensible either way. Window time is more accurate for "where does the chapter visually begin in this rendered transcript"; chapter time is more accurate for "what time should I seek the YouTube player to". Without empirical evidence that one or the other materially confuses callers, the current behavior (window time) reads more cleanly because the heading matches the window anchor immediately below it.
-- **How to evaluate**: If callers cite chapter timestamps to seek the video player and find them off by one window's worth of seconds, switch to `chapter.start_time` in `_render_compact`'s heading line. Otherwise leave as-is.
-
 ### SaT (`wtpsplit`) for unpunctuated transcripts
 
 - **Location**: `parkour_mcp/youtube.py#coalesce_windows` and the punctuation-density branch logic.
