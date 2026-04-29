@@ -1,15 +1,29 @@
 """Tests for parkour_mcp.kagi module — balance checking and lockout logic."""
 
 import pytest
+import requests
 from unittest.mock import patch, MagicMock
 
 import parkour_mcp.kagi as kagi_mod
 from parkour_mcp.kagi import (
     _extract_balance,
     _check_balance,
+    _handle_kagi_error,
     search,
     summarize,
 )
+
+
+def _make_http_error(status_code: int, body: bytes = b"") -> requests.HTTPError:
+    """Build a real requests.HTTPError with response attached, matching the
+    shape kagiapi raises via ``response.raise_for_status()``."""
+    response = requests.Response()
+    response.status_code = status_code
+    response._content = body
+    response.url = "https://kagi.com/api/v0/search?q=test"
+    err = requests.HTTPError(f"{status_code} Client Error for url: {response.url}")
+    err.response = response
+    return err
 
 
 # --- _extract_balance ---
@@ -141,3 +155,36 @@ class TestSummarizeLockout:
         assert "Summary text here." in result
         assert "$0.10" in result
         assert kagi_mod._summarize_locked is True
+
+
+# --- _handle_kagi_error ---
+
+
+class TestHandleKagiError:
+    def test_recognizes_insufficient_credit_in_400_body(self):
+        # Kagi returns 400 (not 402) for wallet exhaustion; the structured
+        # error code lives in the response body. requests.Response.__bool__
+        # returns False for 4xx, so the body branch must guard with `is not None`.
+        body = (
+            b'{"meta":{"api_balance":0.0},"data":null,'
+            b'"error":[{"code":101,"msg":"Insufficient credit to perform this request."}]}'
+        )
+        result = _handle_kagi_error(_make_http_error(400, body))
+        assert "Insufficient API credits" in result
+
+    def test_recognizes_401_via_status_code(self):
+        result = _handle_kagi_error(_make_http_error(401))
+        assert "Invalid API key" in result
+
+    def test_recognizes_402_via_status_code(self):
+        result = _handle_kagi_error(_make_http_error(402))
+        assert "Insufficient API credits" in result
+
+    def test_falls_through_on_unrecognized_status(self):
+        result = _handle_kagi_error(_make_http_error(503))
+        assert "503" in result
+
+    def test_handles_exception_without_response(self):
+        # Network errors (timeouts, DNS failures) raise without a response object.
+        result = _handle_kagi_error(requests.ConnectionError("connection refused"))
+        assert "connection refused" in result
