@@ -190,30 +190,67 @@ class TestFormatHelpers:
 
     def test_captions_summary_manual_only(self):
         info = {"subtitles": {"en": [], "fr": []}, "automatic_captions": {}}
-        langs, auto_only = _captions_summary(info)
-        assert langs == ["en", "fr"]
-        assert auto_only is False
+        result = _captions_summary(info)
+        assert result.source == ["en", "fr"]
+        assert result.uploaded == ["en", "fr"]
+        assert result.available == ["en", "fr"]
+        assert result.auto_translated is False
+        assert result.auto_only is False
 
     def test_captions_summary_auto_only(self):
-        info = {"subtitles": {}, "automatic_captions": {"en": []}}
-        langs, auto_only = _captions_summary(info)
-        assert langs == ["en"]
-        assert auto_only is True
+        info = {
+            "subtitles": {},
+            "automatic_captions": {"en": [{"url": "https://x?lang=en&kind=asr"}]},
+        }
+        result = _captions_summary(info)
+        assert result.source == ["en"]
+        assert result.uploaded == []
+        assert result.available == ["en"]
+        assert result.auto_translated is False
+        assert result.auto_only is True
 
     def test_captions_summary_mixed(self):
         info = {
             "subtitles": {"en": []},
-            "automatic_captions": {"en": [], "fr": []},
+            "automatic_captions": {
+                "en": [{"url": "https://x?lang=en&kind=asr"}],
+                "fr": [{"url": "https://x?lang=en&kind=asr&tlang=fr"}],
+            },
         }
-        langs, auto_only = _captions_summary(info)
-        assert langs == ["en", "fr"]
+        result = _captions_summary(info)
+        # Source = manual + non-tlang auto. fr is a translation, excluded.
+        assert result.source == ["en"]
+        assert result.uploaded == ["en"]
+        assert result.available == ["en", "fr"]
+        assert result.auto_translated is True
         # Mixed = manual exists; not auto-only
-        assert auto_only is False
+        assert result.auto_only is False
+
+    def test_captions_summary_auto_with_translations(self):
+        # Source ja + ja-orig + auto-translated en/fr (tlang= signals translation).
+        info = {
+            "subtitles": {},
+            "automatic_captions": {
+                "ja": [{"url": "https://x?lang=ja&kind=asr"}],
+                "ja-orig": [{"url": "https://x?lang=ja&kind=asr"}],
+                "en": [{"url": "https://x?lang=ja&kind=asr&tlang=en"}],
+                "fr": [{"url": "https://x?lang=ja&kind=asr&tlang=fr"}],
+            },
+        }
+        result = _captions_summary(info)
+        assert result.source == ["ja", "ja-orig"]
+        assert result.uploaded == []
+        assert result.available == ["en", "fr", "ja", "ja-orig"]
+        assert result.auto_translated is True
+        assert result.auto_only is True
 
     def test_captions_summary_none(self):
-        langs, auto_only = _captions_summary({})
-        assert langs == []
-        assert auto_only is False
+        result = _captions_summary({})
+        assert result.source == []
+        assert result.uploaded == []
+        assert result.available == []
+        assert result.auto_translated is False
+        assert result.auto_only is False
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +462,127 @@ class TestVideoAction:
             url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
         )
         assert "captions_auto_only: True" in result
+
+    @pytest.mark.asyncio
+    async def test_video_emits_captions_source_not_available(self, monkeypatch):
+        # Default video output uses captions_source (the curated set);
+        # the full captions_available list is suppressed to avoid
+        # dumping the auto-translation matrix into every response.
+        info = dict(_SAMPLE_INFO)
+        info["subtitles"] = {}
+        info["automatic_captions"] = {
+            "ja": [{"url": "https://x?lang=ja&kind=asr"}],
+            "en": [{"url": "https://x?lang=ja&kind=asr&tlang=en"}],
+        }
+        info["language"] = "ja"
+        monkeypatch.setattr(
+            _yt_module, "_get_ydl_video",
+            lambda: _FakeYoutubeDL(info),
+        )
+        result = await youtube(
+            action="video",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "captions_source:" in result
+        assert "captions_available:" not in result
+        assert "captions_auto_translated: True" in result
+
+    @pytest.mark.asyncio
+    async def test_video_hint_includes_iso_code_example(self, monkeypatch):
+        # The transcript hint must always nudge the LLM with a 2-letter
+        # ISO code example so it doesn't waste a call on full names like
+        # languages=["English"].
+        info = dict(_SAMPLE_INFO)
+        info["subtitles"] = {}
+        info["automatic_captions"] = {
+            "ja": [{"url": "https://x?lang=ja&kind=asr"}],
+        }
+        info["language"] = "ja"
+        monkeypatch.setattr(
+            _yt_module, "_get_ydl_video",
+            lambda: _FakeYoutubeDL(info),
+        )
+        result = await youtube(
+            action="video",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "hint:" in result
+        assert 'languages=["ja"]' in result
+        assert "2-letter ISO" in result
+
+    @pytest.mark.asyncio
+    async def test_video_hint_mentions_auto_translation(self, monkeypatch):
+        # When tlang= tracks exist, the hint adds a note that off-source
+        # languages auto-translate so the LLM knows it has the option.
+        info = dict(_SAMPLE_INFO)
+        info["subtitles"] = {}
+        info["automatic_captions"] = {
+            "ja": [{"url": "https://x?lang=ja&kind=asr"}],
+            "en": [{"url": "https://x?lang=ja&kind=asr&tlang=en"}],
+        }
+        info["language"] = "ja"
+        monkeypatch.setattr(
+            _yt_module, "_get_ydl_video",
+            lambda: _FakeYoutubeDL(info),
+        )
+        result = await youtube(
+            action="video",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "auto-translate" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_video_hint_omitted_when_no_captions(self, monkeypatch):
+        info = dict(_SAMPLE_INFO)
+        info["subtitles"] = {}
+        info["automatic_captions"] = {}
+        monkeypatch.setattr(
+            _yt_module, "_get_ydl_video",
+            lambda: _FakeYoutubeDL(info),
+        )
+        result = await youtube(
+            action="video",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "hint:" not in result
+        assert "captions_source:" not in result
+
+    @pytest.mark.asyncio
+    async def test_video_captions_uploaded_only_when_manual_exists(
+        self, monkeypatch,
+    ):
+        # captions_uploaded is a quality signal — its presence tells the
+        # LLM "manual uploads exist" (higher quality than auto). Suppress
+        # only when no manual tracks exist at all.
+        info = dict(_SAMPLE_INFO)
+        # Auto-only case: no manual → captions_uploaded suppressed.
+        info["subtitles"] = {}
+        info["automatic_captions"] = {
+            "en": [{"url": "https://x?lang=en&kind=asr"}],
+        }
+        monkeypatch.setattr(
+            _yt_module, "_get_ydl_video",
+            lambda: _FakeYoutubeDL(info),
+        )
+        result = await youtube(
+            action="video",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "captions_source:" in result
+        assert "captions_uploaded:" not in result
+
+        # Manual exists: captions_uploaded surfaces, even when the same
+        # language also has an auto track. The signal is "manual exists,"
+        # not "manual differs from source."
+        info["subtitles"] = {"en": [{"ext": "vtt"}]}
+        info["automatic_captions"] = {
+            "en": [{"url": "https://x?lang=en&kind=asr"}],
+        }
+        result2 = await youtube(
+            action="video",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        )
+        assert "captions_uploaded:" in result2
 
     @pytest.mark.asyncio
     async def test_video_with_comment_count_emits_see_also(self, monkeypatch):
@@ -1255,6 +1413,48 @@ class TestTranscriptAction:
         )
         assert "Error" in result
         assert "disabled" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_transcript_found_emits_captions_available(
+        self, monkeypatch,
+    ):
+        # NoTranscriptFound is the only path that surfaces the full
+        # captions_available list (including auto-translation surface)
+        # in frontmatter — the caller asked for an explicit language
+        # and missed, so they need the full set to retry.
+        from youtube_transcript_api import NoTranscriptFound
+
+        def fake_fetch(video_id, languages):
+            del languages
+            raise NoTranscriptFound(video_id, ["xx"], None)
+        monkeypatch.setattr(_yt_module, "_fetch_transcript_sync", fake_fetch)
+
+        info = dict(_SAMPLE_INFO)
+        info["subtitles"] = {}
+        info["automatic_captions"] = {
+            "ja": [{"url": "https://x?lang=ja&kind=asr"}],
+            "en": [{"url": "https://x?lang=ja&kind=asr&tlang=en"}],
+            "fr": [{"url": "https://x?lang=ja&kind=asr&tlang=fr"}],
+        }
+        monkeypatch.setattr(
+            _yt_module, "_get_ydl_video",
+            lambda: _FakeYoutubeDL(info),
+        )
+
+        result = await youtube(
+            action="transcript",
+            url="https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            languages=["xx"],
+        )
+        assert "Error" in result
+        assert "No transcript available" in result
+        assert "captions_available:" in result
+        # Full set, including auto-translations.
+        assert "- en" in result
+        assert "- fr" in result
+        assert "- ja" in result
+        # requested_languages echoes back so the caller can see what missed.
+        assert "requested_languages:" in result
 
     @pytest.mark.asyncio
     async def test_request_blocked_propagates(self, monkeypatch):

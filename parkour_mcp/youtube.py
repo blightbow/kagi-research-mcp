@@ -225,19 +225,52 @@ def _format_upload_date(yyyymmdd: Optional[str]) -> Optional[str]:
     return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}"
 
 
-def _captions_summary(info: dict) -> tuple[list[str], bool]:
-    """Return ``(available_languages, has_auto_only)``.
+@dataclass(frozen=True)
+class _CaptionsInfo:
+    """Caption inventory split for frontmatter and hint construction.
 
-    Manual and automatic captions are merged into a single sorted
-    language list; the second element flags videos where only
-    auto-generated captions exist (a reliable quality signal — see the
-    transcript renderer plan for how this routes branching later).
+    ``source`` is what was actually captured for the video — manual
+    uploads plus auto-generated tracks at the source language (no
+    ``tlang`` query parameter on the track URL). ``uploaded`` is the
+    subset that was hand-curated by the uploader. ``available`` is the
+    full surface including YouTube's ~140-language auto-translation
+    matrix; it's deliberately suppressed from the default ``video``
+    frontmatter and only surfaces in the NoTranscriptFound response so
+    callers asking for an off-source language can see the full set.
+    """
+    source: list[str]
+    uploaded: list[str]
+    available: list[str]
+    auto_translated: bool
+    auto_only: bool
+
+
+def _captions_summary(info: dict) -> _CaptionsInfo:
+    """Inspect a yt-dlp info dict and split caption tracks by provenance.
+
+    yt-dlp puts manual subtitle uploads in ``subtitles`` and ML-derived
+    tracks (both source-language ASR and auto-translations) in
+    ``automatic_captions``. Source-language ASR tracks are identifiable
+    by the absence of a ``tlang=`` query parameter on their track URL;
+    translations always carry ``tlang=<target>``.
     """
     manual = list((info.get("subtitles") or {}).keys())
-    auto = list((info.get("automatic_captions") or {}).keys())
-    langs = sorted(set(manual + auto))
-    has_auto_only = bool(auto and not manual)
-    return langs, has_auto_only
+    auto = info.get("automatic_captions") or {}
+    source_auto: list[str] = []
+    has_translation = False
+    for lang, tracks in auto.items():
+        first_url = (tracks[0].get("url") if tracks else "") or ""
+        if "tlang=" in first_url:
+            has_translation = True
+        else:
+            source_auto.append(lang)
+    return _CaptionsInfo(
+        source=sorted(set(manual) | set(source_auto)),
+        uploaded=sorted(set(manual)),
+        available=sorted(set(manual) | set(auto.keys())),
+        auto_translated=has_translation,
+        auto_only=bool(auto and not manual),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -407,8 +440,16 @@ async def _video(url: str) -> str:
     title = info.get("title") or "Untitled"
     description = info.get("description") or ""
 
-    captions_langs, captions_auto_only = _captions_summary(info)
+    captions = _captions_summary(info)
     comment_count = info.get("comment_count")
+
+    # captions_uploaded is a quality signal — manual uploads are
+    # author-curated and outrank auto-generated transcripts. Surface
+    # whenever any manual track exists, even when it overlaps with
+    # captions_source, so the LLM can pick the highest-quality track.
+    captions_uploaded_field: Optional[list[str]] = (
+        captions.uploaded if captions.uploaded else None
+    )
 
     # Frontmatter holds only structurally-validated fields (IDs of known
     # shape, constructed URLs, numeric counts, enum-shaped status fields,
@@ -431,11 +472,37 @@ async def _video(url: str) -> str:
         "language": info.get("language"),
         "live_status": info.get("live_status"),
         "availability": info.get("availability"),
-        "captions_available": captions_langs or None,
-        "captions_auto_only": True if captions_auto_only else None,
+        "captions_source": captions.source or None,
+        "captions_uploaded": captions_uploaded_field,
+        "captions_auto_only": True if captions.auto_only else None,
+        "captions_auto_translated": True if captions.auto_translated else None,
         "comment_count": comment_count,
         "trust": _TRUST_ADVISORY,
     })
+
+    # Transcript hint: emitted whenever any caption surface exists,
+    # including auto-translation-only edge cases. The hint always names
+    # an explicit 2-letter ISO code in the example so the LLM doesn't
+    # waste a call on languages=["English"] or similar full-name forms;
+    # the example draws from the video's primary language when known,
+    # falling back to the first source track or "en".
+    if captions.source or captions.uploaded or captions.available:
+        primary = (
+            info.get("language")
+            or (captions.source[0] if captions.source else None)
+            or (captions.uploaded[0] if captions.uploaded else None)
+            or "en"
+        )
+        hint_parts = [
+            f'{tool_name("youtube")} action=transcript url=... '
+            f'languages=["{primary}"] for caption text.',
+            'Use 2-letter ISO codes (e.g. "en", "ja"), not full language names.',
+        ]
+        if captions.auto_translated:
+            hint_parts.append(
+                "Off-source languages auto-translate; request explicitly."
+            )
+        fm_entries.append("hint", " ".join(hint_parts))
 
     # Pivot hint: when comments exist, point at the dedicated
     # YoutubeComments tool rather than carrying comment-specific
@@ -1202,6 +1269,42 @@ def _map_transcript_error(exc: Exception) -> str:
     return f"Error: Transcript fetch failed ({type(exc).__name__}): {short}"
 
 
+async def _no_transcript_response(
+    canonical_url: str, video_id: str, languages: list[str],
+) -> str:
+    """Frontmatter response for NoTranscriptFound with the full caption set.
+
+    The default ``video`` action deliberately suppresses the auto-
+    translation matrix from frontmatter — it's noise for the common
+    case. But once a caller has asked for an explicit language and
+    missed, the full ``captions_available`` list is exactly the
+    information they need to retry. Re-extraction is free here: the
+    yt-dlp info dict is cached by ``_extract_video_info_sync`` and the
+    chapters fetch usually warmed it during the same transcript call.
+    """
+    available: list[str] = []
+    try:
+        info = await asyncio.to_thread(_extract_video_info_sync, canonical_url)
+    except Exception:
+        info = None
+    if isinstance(info, dict):
+        available = _captions_summary(info).available
+    fm_entries = FMEntries({
+        "source": canonical_url,
+        "api": "youtube-transcript-api",
+        "video_id": video_id,
+        "requested_languages": list(languages),
+        "captions_available": available or None,
+    })
+    msg = (
+        f"Error: No transcript available in the requested language(s): "
+        f"{list(languages)}. See `captions_available` in the frontmatter for "
+        "the full set including YouTube's auto-translation surface; retry "
+        "with one of those codes."
+    )
+    return _build_frontmatter(fm_entries) + "\n\n" + msg
+
+
 # ---------------------------------------------------------------------------
 # Action: transcript
 # ---------------------------------------------------------------------------
@@ -1759,11 +1862,20 @@ async def _transcript(
             # AgeRestricted, VideoUnavailable, InvalidVideoId) surface as-is.
             try:
                 from youtube_transcript_api import (
-                    PoTokenRequired, RequestBlocked,
+                    NoTranscriptFound, PoTokenRequired, RequestBlocked,
                 )
             except ImportError:
                 chapters_task.cancel()
                 return _map_transcript_error(exc)
+            if isinstance(exc, NoTranscriptFound):
+                # Route to the dedicated helper so the response carries
+                # captions_available (the full auto-translation surface)
+                # and the caller can retry with a code that's actually
+                # exposed for this video.
+                chapters_task.cancel()
+                return await _no_transcript_response(
+                    canonical_url, video_id, languages,
+                )
             if isinstance(exc, (RequestBlocked, PoTokenRequired)):
                 fetched = await _yt_dlp_transcript_fallback(video_id, languages)
                 if fetched is None:
