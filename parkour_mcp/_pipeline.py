@@ -1494,6 +1494,23 @@ def _process_markdown_sections(
                 "Section extraction returns only the selected heading's direct content. "
                 "Subsections are separate entries — request them by name to include them.",
             )
+        # Warn when a matched section is heading-only (no body between this
+        # heading and the next).  Distinct from has_subsections: a header-only
+        # section may have no children at all (the next heading is a sibling
+        # at the same level), so the caller needs the section tree to find
+        # where the content actually lives.
+        header_only_names = [
+            m["name"] for m in (sections_requested_meta or [])
+            if m.get("header_only")
+        ]
+        if header_only_names:
+            quoted = ", ".join(f"'{n}'" for n in header_only_names)
+            _append_frontmatter_entry(
+                frontmatter_entries, "note",
+                f"Section {quoted} has no body content (heading-only divider). "
+                f"Call {tool_name('web_fetch_sections')} on this URL to locate "
+                "sibling or child sections that hold the content.",
+            )
 
     markdown_content, truncation_hint = _apply_semantic_truncation(markdown_content, max_tokens)
     if truncation_hint and all_sections and not section_names:
