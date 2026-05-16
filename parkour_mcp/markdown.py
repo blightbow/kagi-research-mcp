@@ -1,5 +1,6 @@
 """HTML-to-markdown conversion and section extraction helpers."""
 
+import hashlib
 import re
 from collections import UserDict
 from collections.abc import Mapping
@@ -878,6 +879,54 @@ def _filter_markdown_by_sections(
     return result, matched_meta, unmatched
 
 
+# ---------------------------------------------------------------------------
+# Tip registry and fire-once ledger
+#
+# ``tip`` frontmatter carries an educational, once-per-session lesson — see
+# docs/frontmatter-standard.md "tip semantics".  Two module-level structures
+# back it:
+#
+#   _TIPS       registry mapping a stable tip ID to its canonical text.
+#               Tips are content-addressable by ID: callers emit an ID via
+#               ``FMEntries.set_tip()``, never a string, so templated or
+#               variable content cannot reach a ``tip`` field.
+#   _FIRED_TIPS ledger of ledger-IDs already emitted this process.  A tip
+#               fires at most once; URL-scoped tips fire once per URL.
+#
+# The ledger is process-lifetime by design and resets only on server
+# restart.  Tests clear it per-test via an autouse fixture in conftest.py.
+# ---------------------------------------------------------------------------
+_TIPS: dict[str, str] = {}
+
+_FIRED_TIPS: set[str] = set()
+
+
+def _tip_url_scope(url: str) -> str:
+    """Return a short stable digest of *url* for per-URL tip scoping."""
+    return hashlib.sha1(url.encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _resolve_tip(ledger_id: str) -> Optional[str]:
+    """Resolve a tip ledger-ID to its text, or None if it should not render.
+
+    Called only by ``_build_frontmatter``.  Returns None when the tip has
+    already fired this process or when the base ID is not registered.
+
+    Mutates ``_FIRED_TIPS``: a tip is marked spent the moment it renders,
+    so the fire-once guarantee is keyed to actual output rather than to the
+    earlier ``set_tip`` call — a tool that errors out before building its
+    frontmatter does not burn the tip.
+    """
+    if ledger_id in _FIRED_TIPS:
+        return None
+    base_id = ledger_id.split("::", 1)[0]
+    text = _TIPS.get(base_id)
+    if text is None:
+        return None
+    _FIRED_TIPS.add(ledger_id)
+    return text
+
+
 class FMEntries(UserDict):
     """Frontmatter-entries dict that routes multi-contributor keys
     through ``append`` so concurrent advisories compose instead of
@@ -920,7 +969,43 @@ class FMEntries(UserDict):
                 f"advisories. Use `.append({key!r}, value)` or "
                 f"`_append_frontmatter_entry(fm, {key!r}, value)`."
             )
+        if key == "tip":
+            raise TypeError(
+                "Direct assignment to FMEntries['tip'] is forbidden; use "
+                "`.set_tip(tip_id, url=...)` so the value is validated "
+                "against the tip registry and scoped correctly."
+            )
         super().__setitem__(key, value)
+
+    def set_tip(self, tip_id: str, *, url: Optional[str] = None) -> None:
+        """Emit a single educational tip on this frontmatter build.
+
+        Unlike the protected keys (which append), ``tip`` is single-write
+        per build: a second ``set_tip`` call raises.  *tip_id* must be a
+        base ID registered in ``_TIPS``.
+
+        When *url* is given the tip is scoped per-URL — it fires once for
+        each distinct URL rather than once per process — by suffixing the
+        ledger ID with a digest of the URL.  The fire-once dedup itself
+        happens at render time in ``_build_frontmatter``; ``set_tip`` only
+        records intent.
+        """
+        if "::" in tip_id:
+            raise ValueError(
+                f"tip_id {tip_id!r} must be a base ID without a '::' scope "
+                f"suffix; pass url= to scope a tip per-URL."
+            )
+        if tip_id not in _TIPS:
+            raise ValueError(
+                f"tip_id {tip_id!r} is not registered in _TIPS; add it to "
+                f"the registry before emitting it."
+            )
+        if "tip" in self.data:
+            raise TypeError(
+                f"FMEntries already carries a tip ({self.data['tip']!r}); "
+                f"`tip` is single-write per build."
+            )
+        self.data["tip"] = f"{tip_id}::{_tip_url_scope(url)}" if url else tip_id
 
     def append(self, key: str, value) -> None:
         """Append a value to *key*, promoting scalar→list on second write.
@@ -1018,6 +1103,12 @@ def _build_frontmatter(
     commits a0ec740 and fa714ee — anything derived from page headings
     belongs in the untrusted zone, not the trusted server-generated one.
 
+    A ``tip`` entry is resolved through the registry and fire-once ledger
+    (see ``_resolve_tip``): an already-fired or unregistered tip renders
+    nothing, and rendering a tip marks it spent.  This is a deliberate
+    side effect of the build — the fire-once guarantee is keyed to actual
+    output, per docs/frontmatter-standard.md "tip semantics".
+
     Args:
         entries: Key-value pairs for frontmatter (None values are skipped).
         sections_not_found: Section names that were requested but not
@@ -1027,6 +1118,11 @@ def _build_frontmatter(
     lines = ["---"]
     for key, value in entries.items():
         if value is None:
+            continue
+        if key == "tip":
+            rendered = _resolve_tip(value)
+            if rendered is not None:
+                lines.append(f"tip: {rendered}")
             continue
         if isinstance(value, list):
             if len(value) == 1:

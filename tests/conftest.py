@@ -44,6 +44,23 @@ _mediawiki_mod = sys.modules["parkour_mcp.mediawiki"]
 import parkour_mcp.youtube  # noqa: E402, F401
 _youtube_mod = sys.modules["parkour_mcp.youtube"]
 
+import parkour_mcp.markdown  # noqa: E402, F401
+_markdown_mod = sys.modules["parkour_mcp.markdown"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_fired_tips():
+    """Clear the process-lifetime tip ledger before and after each test.
+
+    The ``tip`` fire-once ledger persists for the MCP server's lifetime by
+    design; under pytest that lifetime spans the whole session, so a tip
+    emitted in one test would be silently suppressed in every later test.
+    Reset per test so tip behavior is observed in isolation.
+    """
+    _markdown_mod._FIRED_TIPS.clear()
+    yield
+    _markdown_mod._FIRED_TIPS.clear()
+
 
 @pytest.fixture(autouse=True)
 def _enable_s2_for_tests(monkeypatch):
