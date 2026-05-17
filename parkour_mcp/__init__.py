@@ -211,11 +211,7 @@ PROFILE_VARS = {
 TOOL_DESCRIPTIONS = {
     "search": """Search the web using Kagi's curated search index.
 
-Use this as an alternative to {web_search} when it returns few or poor quality
-results. Kagi's index is independently curated, resistant to SEO spam, and
-may surface different sources. Returns compact results with snippets and
-timestamps — much lighter on context than {web_search}'s summarized snippets,
-making it better suited for multi-query research workflows.
+{search_positioning}
 
 Supports search operators in the query string:
 - site:example.com — restrict to a domain
@@ -291,14 +287,7 @@ Supports HTML, plain text, JSON, and XML content types.""",
 
     "summarize": """Summarize content from a URL using Kagi's Universal Summarizer.
 
-Position relative to the two fetch tools:
-- {web_fetch} returns host-summarized content (fast, default; subject
-  to bot detection and datacenter IP bans)
-- {fetch_direct} returns raw unsummarized content (local fetch through
-  the user's device; bypasses the bot detection and IP bans that
-  block {web_fetch})
-- this tool summarizes through Kagi's layer — returns a condensed
-  digest only, never raw content
+{summarize_positioning}
 
 Reach for this when even {fetch_direct} can't retrieve the source
 (captcha-gated pages, anti-bot walls), or for formats neither built-in
@@ -588,12 +577,81 @@ Wiki instance via wiki= parameter:
 }
 
 
-def _build_description(tool_name: str, profile: str) -> str:
-    """Build a tool description by resolving placeholders for the given profile."""
-    return TOOL_DESCRIPTIONS[tool_name].format(
-        **PROFILE_VARS[profile],
-        search_grammar=SEARCH_GRAMMAR_DOC,
+# Description fragments resolved into {search_positioning} / {summarize_positioning}.
+# Kept out of TOOL_DESCRIPTIONS because the Hermes plugin swaps in the *_OVERRIDE
+# variants when parkour replaces the host's web_extract / web_search: once
+# parkour *is* that built-in, the prose must stop positioning itself against a
+# sibling tool that no longer exists.
+_SEARCH_POSITIONING = """Use this as an alternative to {web_search} when it returns few or poor quality
+results. Kagi's index is independently curated, resistant to SEO spam, and
+may surface different sources. Returns compact results with snippets and
+timestamps — much lighter on context than {web_search}'s summarized snippets,
+making it better suited for multi-query research workflows."""
+
+_SEARCH_POSITIONING_OVERRIDE = """Returns the web results Kagi surfaces for a query. Kagi's index is
+independently curated and resistant to SEO spam. Results stay compact
+(snippets and timestamps per hit), keeping context lean across
+multi-query research workflows."""
+
+_SUMMARIZE_POSITIONING = """Position relative to the two fetch tools:
+- {web_fetch} returns host-summarized content (fast, default; subject
+  to bot detection and datacenter IP bans)
+- {fetch_direct} returns raw unsummarized content (local fetch through
+  the user's device; bypasses the bot detection and IP bans that
+  block {web_fetch})
+- this tool summarizes through Kagi's layer — returns a condensed
+  digest only, never raw content"""
+
+_SUMMARIZE_POSITIONING_OVERRIDE = """Position relative to the fetch tools:
+- {fetch_direct} returns raw unsummarized content (local fetch through
+  the user's device; bypasses the bot detection and IP bans that block
+  datacenter fetchers)
+- this tool summarizes through Kagi's layer, returning a condensed
+  digest only, never raw content"""
+
+# Override variant of the hermes profile's fetch_direct_when_to_use: drops the
+# "Unlike web_extract" comparison, since under override parkour *is* web_extract.
+_HERMES_FETCH_DIRECT_WHEN_TO_USE_OVERRIDE = (
+    "Fetches through the user's device with precise content extraction and\n"
+    "clean first-party APIs instead of summarization. Returns a rich\n"
+    "content-exploring experience not subject to 403 bans of data-center\n"
+    "subnets, and surfaces specific details that summarization discards."
+)
+
+
+def _build_description(
+    tool_name: str,
+    profile: str,
+    *,
+    override_web_extract: bool = False,
+    override_web_search: bool = False,
+) -> str:
+    """Build a tool description by resolving placeholders for the given profile.
+
+    ``override_web_extract`` / ``override_web_search`` apply only to the
+    ``hermes`` profile, where the plugin may replace the host's web_extract /
+    web_search tool. When set, the affected positioning fragment and the
+    fetch_direct naming swap to variants that read coherently once parkour's
+    own tool *is* that built-in (see hermes_plugin.py).
+    """
+    profile_vars = dict(PROFILE_VARS[profile])
+    hermes_override_extract = profile == "hermes" and override_web_extract
+    hermes_override_search = profile == "hermes" and override_web_search
+    if hermes_override_extract:
+        profile_vars["fetch_direct"] = "web_extract"
+        profile_vars["fetch_direct_when_to_use"] = _HERMES_FETCH_DIRECT_WHEN_TO_USE_OVERRIDE
+    search_positioning = (
+        _SEARCH_POSITIONING_OVERRIDE if hermes_override_search else _SEARCH_POSITIONING
     )
+    summarize_positioning = (
+        _SUMMARIZE_POSITIONING_OVERRIDE if hermes_override_extract else _SUMMARIZE_POSITIONING
+    )
+    fragments = {
+        "search_grammar": SEARCH_GRAMMAR_DOC,
+        "search_positioning": search_positioning.format(**profile_vars),
+        "summarize_positioning": summarize_positioning.format(**profile_vars),
+    }
+    return TOOL_DESCRIPTIONS[tool_name].format(**profile_vars, **fragments)
 
 
 def _apply_s2_enrichment() -> None:

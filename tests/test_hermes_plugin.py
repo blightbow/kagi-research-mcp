@@ -35,27 +35,32 @@ class _FakeCtx:
         self.tools: list[dict] = []
 
     def register_tool(self, *, name, toolset, schema, handler,
-                       is_async=False, description="", **kwargs):
+                      is_async=False, description="", override=False, **kwargs):
         del kwargs
         self.tools.append({
             "name": name, "toolset": toolset, "schema": schema,
             "handler": handler, "is_async": is_async, "description": description,
+            "override": override,
         })
 
     def by_name(self, name: str) -> dict:
         return next(t for t in self.tools if t["name"] == name)
 
 
-def _register(monkeypatch, *, s2: bool) -> _FakeCtx:
-    """Run register() against a fake ctx with a deterministic S2 gate.
+def _register(monkeypatch, *, s2=False, override_extract=False,
+              override_search=False) -> _FakeCtx:
+    """Run register() against a fake ctx with deterministic gates.
 
-    The S2 opt-in is environmental (env var or config file), so it is pinned
-    here rather than left to the host. _apply_s2_enrichment mutates the
-    module-global TOOL_DESCRIPTIONS; it is stubbed out so the s2=True path
-    does not leak description edits into other tests.
+    The S2 opt-in and the override flags are both environmental (env var /
+    config file), so all three are pinned here rather than left to the host.
+    _apply_s2_enrichment mutates the module-global TOOL_DESCRIPTIONS; it is
+    stubbed out so the s2=True path does not leak description edits into
+    other tests.
     """
     monkeypatch.setattr(hermes_plugin, "s2_enabled", lambda: s2)
     monkeypatch.setattr(hermes_plugin, "_apply_s2_enrichment", lambda: None)
+    monkeypatch.setattr(hermes_plugin, "_read_override_flags",
+                        lambda: (override_extract, override_search))
     ctx = _FakeCtx()
     hermes_plugin.register(ctx)
     return ctx
@@ -155,3 +160,74 @@ def test_handler_ignores_host_kwargs():
 
     handler = hermes_plugin._make_handler(stub_tool, "stub")
     assert handler({}, task_id="t1", session_id="s1") == "ok"
+
+
+# --- built-in tool override -------------------------------------------------
+
+def test_override_off_keeps_native_parkour_names(monkeypatch):
+    """With both flags off, the fetch/search tools keep parkour's own names
+    and nothing claims an override.
+    """
+    ctx = _register(monkeypatch)
+    names = {t["name"] for t in ctx.tools}
+    assert {"web_fetch_incisive", "kagi_search"} <= names
+    assert "web_extract" not in names and "web_search" not in names
+    assert all(t["override"] is False for t in ctx.tools)
+
+
+def test_override_web_extract_replaces_the_builtin(monkeypatch):
+    """override_web_extract registers the fetch tool as web_extract with the
+    override flag; the native web_fetch_incisive name is not used.
+    """
+    ctx = _register(monkeypatch, override_extract=True)
+    names = {t["name"] for t in ctx.tools}
+    assert "web_extract" in names
+    assert "web_fetch_incisive" not in names
+    assert ctx.by_name("web_extract")["override"] is True
+    # search is untouched when only the extract flag is set
+    assert "kagi_search" in names
+    assert ctx.by_name("kagi_search")["override"] is False
+
+
+def test_override_web_search_replaces_the_builtin(monkeypatch):
+    """override_web_search registers the Kagi search tool as web_search with
+    the override flag; the native kagi_search name is not used.
+    """
+    ctx = _register(monkeypatch, override_search=True)
+    names = {t["name"] for t in ctx.tools}
+    assert "web_search" in names
+    assert "kagi_search" not in names
+    assert ctx.by_name("web_search")["override"] is True
+    assert "web_fetch_incisive" in names
+    assert ctx.by_name("web_fetch_incisive")["override"] is False
+
+
+def test_override_leaves_other_tools_additive(monkeypatch):
+    """Overriding the web tools must not flag unrelated tools for override."""
+    ctx = _register(monkeypatch, override_extract=True, override_search=True)
+    overridden = {t["name"] for t in ctx.tools if t["override"]}
+    assert overridden == {"web_extract", "web_search"}
+
+
+def test_override_descriptions_drop_self_reference(monkeypatch):
+    """Once parkour's tool *is* the built-in, its description must stop
+    positioning itself against the sibling it replaced.
+    """
+    ctx = _register(monkeypatch, override_extract=True, override_search=True)
+    extract_desc = ctx.by_name("web_extract")["description"]
+    assert "Unlike web_extract" not in extract_desc
+    assert "two fetch tools" not in extract_desc
+    search_desc = ctx.by_name("web_search")["description"]
+    assert "alternative to web_search" not in search_desc
+
+
+def test_override_schemas_stay_well_formed(monkeypatch):
+    """Override registration must still produce valid object schemas whose
+    name matches the (host) registration name.
+    """
+    ctx = _register(monkeypatch, override_extract=True, override_search=True)
+    for tool in ctx.tools:
+        schema = tool["schema"]
+        assert schema["name"] == tool["name"]
+        assert schema["parameters"]["type"] == "object"
+        assert schema["description"].strip()

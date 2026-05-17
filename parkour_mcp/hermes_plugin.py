@@ -22,6 +22,23 @@ server's one-process / one-loop execution model exactly, so the logic modules
 need no awareness of the host. Handlers are therefore registered synchronous
 (``is_async=False``): Hermes runs sync handlers in a worker thread, so
 blocking on the result future is safe and never stalls the agent loop.
+
+Replacing the host's web tools
+------------------------------
+By default parkour's tools register alongside Hermes' built-ins under their
+own names. Two opt-in flags under ``plugins.entries.parkour`` in
+``~/.hermes/config.yaml`` make parkour *replace* a built-in instead::
+
+    plugins:
+      entries:
+        parkour:
+          override_web_extract: true   # parkour fetch registers as web_extract
+          override_web_search: true    # parkour Kagi search registers as web_search
+
+When set, the tool registers under the host name with ``override=True`` and
+its description switches to a variant that no longer positions parkour
+against the built-in it has replaced. The flags are read at registration
+time, so a change takes effect on the next Hermes start.
 """
 
 from __future__ import annotations
@@ -132,12 +149,44 @@ def _schema_for(func: _ToolFunc, name: str, description: str) -> dict:
     return {"name": name, "description": description, "parameters": tool.parameters}
 
 
+# parkour internal tool name -> the Hermes built-in it replaces when the
+# matching plugins.entries.parkour.* flag is set.
+_OVERRIDE_TARGETS = {
+    "web_fetch_direct": "web_extract",
+    "search": "web_search",
+}
+
+
+def _read_override_flags() -> tuple[bool, bool]:
+    """Read (override_web_extract, override_web_search) from config.yaml.
+
+    parkour's per-plugin options live at ``plugins.entries.parkour`` — the
+    same config namespace Hermes' own plugin_llm uses. Both default off,
+    including when Hermes' config module is unavailable, so this module stays
+    importable outside a Hermes runtime (parkour's own test suite imports it
+    directly).
+    """
+    try:
+        # Hermes-runtime-only module; absent in parkour's own environment.
+        from hermes_cli.config import cfg_get, load_config  # type: ignore
+    except ImportError:
+        return False, False
+    config = load_config() or {}
+    extract = bool(cfg_get(config, "plugins", "entries", "parkour",
+                           "override_web_extract", default=False))
+    search = bool(cfg_get(config, "plugins", "entries", "parkour",
+                          "override_web_search", default=False))
+    return extract, search
+
+
 def register(ctx: Any) -> None:
     """Hermes plugin entrypoint, discovered via the ``hermes_agent.plugins`` group.
 
     Called once at Hermes startup. Registers parkour's always-on tools — plus
     ``semantic_scholar`` when the S2 terms-of-service opt-in is set — into the
-    host tool registry under the ``parkour`` toolset.
+    host tool registry under the ``parkour`` toolset. With the override flags
+    set (see module docstring), the fetch / search tools instead register
+    under their Hermes built-in names, replacing them via ``override=True``.
     """
     # Populate the snake_case display-name lookup parkour tools use when they
     # emit hint / see_also strings in their own frontmatter.
@@ -147,14 +196,27 @@ def register(ctx: Any) -> None:
     if s2_on:
         _apply_s2_enrichment()
 
+    override_extract, override_search = _read_override_flags()
+    override_names = {
+        internal: host
+        for internal, host in _OVERRIDE_TARGETS.items()
+        if (internal == "web_fetch_direct" and override_extract)
+        or (internal == "search" and override_search)
+    }
+
     catalog: list[tuple[str, _ToolFunc]] = list(_ALWAYS_ON_TOOLS)
     if s2_on:
         from .semantic_scholar import semantic_scholar
         catalog.append(("semantic_scholar", semantic_scholar))
 
     for internal_name, func in catalog:
-        name = TOOL_NAMES[internal_name][_NAME_PROFILE]
-        description = _build_description(internal_name, _DESC_PROFILE)
+        host_name = override_names.get(internal_name)
+        name = host_name or TOOL_NAMES[internal_name][_NAME_PROFILE]
+        description = _build_description(
+            internal_name, _DESC_PROFILE,
+            override_web_extract=override_extract,
+            override_web_search=override_search,
+        )
         ctx.register_tool(
             name=name,
             toolset=_TOOLSET,
@@ -162,6 +224,10 @@ def register(ctx: Any) -> None:
             handler=_make_handler(func, name),
             is_async=False,
             description=description,
+            override=host_name is not None,
         )
 
-    logger.info("parkour plugin registered %d tools", len(catalog))
+    logger.info(
+        "parkour plugin registered %d tools (override web_extract=%s, web_search=%s)",
+        len(catalog), override_extract, override_search,
+    )
