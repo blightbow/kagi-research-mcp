@@ -11,7 +11,6 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import Icon, ToolAnnotations
 
 from .kagi import search, summarize
-from .fetch_js import web_fetch_js
 from .fetch_direct import web_fetch_direct, web_fetch_sections
 from .arxiv import arxiv
 from .github import github
@@ -41,7 +40,6 @@ _ICON_FILES = {
     "summarize": "summarize",       # Σ  U+03A3 GREEK CAPITAL SIGMA (NotoSansMono)
     "web_fetch_sections": "sections",  # §  U+00A7 SECTION SIGN (NotoSansMono)
     "web_fetch_direct": "exact",    # ⌖  U+2316 POSITION INDICATOR (NotoSansSymbols2)
-    "web_fetch_js": "js",           # ⚡ U+26A1 HIGH VOLTAGE (NotoSansSymbols2)
     "arxiv": "arxiv",               # χ  U+03C7 GREEK SMALL CHI (NotoSansMono)
     "semantic_scholar": "scholar",  # ∴  U+2234 THEREFORE (NotoSansMono)
     "research_shelf": "shelf",      # ⊞  U+229E SQUARED PLUS (NotoSansMath)
@@ -65,7 +63,6 @@ _ALWAYS_ON_TOOLS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("search", search),
     ("web_fetch_sections", web_fetch_sections),
     ("web_fetch_direct", web_fetch_direct),
-    ("web_fetch_js", web_fetch_js),
     ("summarize", summarize),
     ("arxiv", arxiv),
     ("research_shelf", research_shelf),
@@ -250,35 +247,20 @@ pages, and comment permalinks; a permalink scopes output to the linked
 comment while caching the whole thread for follow-up section=/slices=
 queries.
 
-Supports HTML, plain text, JSON, and XML content types.""",
-
-    "web_fetch_js": """Fetch and interact with JavaScript-rendered web content.
-
-Use this when {fetch_direct} returns incomplete content from JS-heavy sites
-(SPAs, React/Vue/Angular apps, dynamically loaded content). For pages that
-are fully rendered in the initial HTML response, {fetch_direct} is cheaper
-and should be tried first.
-
-Targeted extraction (preferred over fetching full pages):
-- section="Syntax" — extract a specific section by heading name
-- search="terms" — keyword search over ~500-token slices, ranked by BM25
-- slices=[3, 4, 5] — retrieve specific slices by index
-- URL fragments (#section-name) are resolved automatically as sections
-
-{search_grammar}
-
-Supports ReAct-style interaction chains:
-1. First call: Fetch page, observe available interactive elements
-2. Subsequent calls: Use 'actions' parameter to interact (click, fill, select)
-3. Extract updated content after interactions
-
-Actions format (JSON array of objects):
+JavaScript-dependent pages: a plain fetch returns static HTML. When that
+comes back as an empty shell, the response frontmatter says so — retry
+with requires_js=true to render through a headless browser. requires_js
+is the heavier path; reach for it in response to that signal, not by
+default. Pass actions to run a ReAct interaction chain before extraction
+(supplying actions implies requires_js):
 - {{"action": "click", "selector": "button#submit"}}
 - {{"action": "fill", "selector": "input[name=query]", "value": "search term"}}
 - {{"action": "select", "selector": "select#region", "value": "us-east"}}
 - {{"action": "wait", "selector": ".results-loaded"}}
+A browser render annotates interactive elements for follow-up actions;
+max_elements caps that list, and 0 omits it.
 
-Returns markdown with interactive elements annotated for follow-up actions.""",
+Supports HTML, plain text, JSON, and XML content types.""",
 
     "summarize": """Summarize content from a URL using Kagi's Universal Summarizer.
 

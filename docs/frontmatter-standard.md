@@ -126,8 +126,9 @@ signal throughout the content.
 
 ## SSRF Protection
 
-Outbound HTTP fetches in `fetch_direct.py` and `fetch_js.py` are guarded
-by `check_url_ssrf()` (`common.py`), which resolves hostnames and checks
+Outbound HTTP fetches are guarded by `check_url_ssrf()` (`common.py`),
+which `web_fetch_direct` runs before dispatching to either its static
+path or the headless-browser renderer. It resolves hostnames and checks
 all addresses against private/loopback/reserved/link-local ranges (IPv4
 and IPv6).  This prevents the MCP server from being used to probe
 internal networks or cloud metadata endpoints.
@@ -199,10 +200,14 @@ Three properties define the field:
    tip has been emitted, subsequent attempts to write it are silently
    dropped.  State resets on MCP server restart.
 3. **Deterministic content.**  Tip strings are content-addressable by
-   ID: no templated variables, no counts, no dates.  If a value needs
-   templating, it is the wrong field; use `hint:` instead.
+   ID.  They may carry `{tool_key}` placeholders, which resolve to the
+   active profile's tool display name — a launch-time constant, so the
+   rendered tip is identical for every call in a process and the ledger
+   can still dedupe by ID.  What they must not carry is per-response
+   variation: no counts, no dates, no caller data.  If a value needs
+   that, it is the wrong field; use `hint:` instead.
 
-Trigger IDs may be tool-pair scoped (`webfetch_js_before_incisive`)
+Trigger IDs may be process scoped (`incisive_premature_playwright`)
 or URL-scoped (`summarize_without_sections::<url-hash>`).  The
 session ledger keys by the full tuple so a per-URL lesson can fire
 once per URL without smothering the lesson on a different URL.
@@ -294,7 +299,7 @@ rejecting the request outright.  This avoids wasting a round-trip.
 
 ## Required Fields by Tool
 
-### Fetch tools (`web_fetch_direct`, `web_fetch_sections`, `web_fetch_js`, GitHub fast path)
+### Fetch tools (`web_fetch_direct`, `web_fetch_sections`, GitHub fast path)
 
 Always present:
 
@@ -436,7 +441,7 @@ Conditional:
 
 ### DOI fast path (via fetch tools)
 
-`doi.org` URLs intercepted by `web_fetch_direct`/`web_fetch_js` resolve
+`doi.org` URLs intercepted by `web_fetch_direct` resolve
 via content negotiation (CSL-JSON) plus CrossRef REST enrichment.  arXiv
 DOIs are delegated to the arXiv handler; RFC DOIs (`10.17487/RFC{N}`)
 are delegated to the IETF handler.
@@ -698,7 +703,7 @@ directory, merged into the existing `hint` list as needed.
 
 **GitHub fast path (via fetch tools):**
 
-GitHub URLs intercepted by `web_fetch_direct` and `web_fetch_js` produce
+GitHub URLs intercepted by `web_fetch_direct` produce
 the same frontmatter as the corresponding GitHub tool actions. The fast
 path additionally populates the 2Q page cache with presplit content:
 
@@ -794,7 +799,7 @@ Defaults:
 
 | Caller                                                          | `max_bytes`     | Deadline |
 |------------------------------------------------------------------|-----------------|----------|
-| `web_fetch_direct`, `web_fetch_js`, fast paths emitting body     | 5 MiB           | 60 s     |
+| `web_fetch_direct` (static + headless render), fast paths        | 5 MiB           | 60 s     |
 | `web_fetch_sections`                                             | 50 MiB          | 60 s     |
 | GitHub blob fast path (`/blob/`, `raw.githubusercontent.com`)   | disabled (None) | 60 s     |
 

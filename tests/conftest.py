@@ -47,19 +47,25 @@ _youtube_mod = sys.modules["parkour_mcp.youtube"]
 import parkour_mcp.markdown  # noqa: E402, F401
 _markdown_mod = sys.modules["parkour_mcp.markdown"]
 
+import parkour_mcp.fetch_direct  # noqa: E402, F401
+_fetch_direct_mod = sys.modules["parkour_mcp.fetch_direct"]
+
 
 @pytest.fixture(autouse=True)
-def _reset_fired_tips():
-    """Clear the process-lifetime tip ledger before and after each test.
+def _reset_tip_session_state():
+    """Clear process-lifetime tip state before and after each test.
 
-    The ``tip`` fire-once ledger persists for the MCP server's lifetime by
-    design; under pytest that lifetime spans the whole session, so a tip
-    emitted in one test would be silently suppressed in every later test.
-    Reset per test so tip behavior is observed in isolation.
+    The ``tip`` fire-once ledger and the ``_JS_SHELL_SEEN`` set persist for
+    the MCP server's lifetime by design; under pytest that lifetime spans the
+    whole session, so state from one test would leak into every later test
+    (a tip suppressed, a premature-tip oracle skewed). Reset per test so tip
+    behavior is observed in isolation.
     """
     _markdown_mod._FIRED_TIPS.clear()
+    _fetch_direct_mod._JS_SHELL_SEEN.clear()
     yield
     _markdown_mod._FIRED_TIPS.clear()
+    _fetch_direct_mod._JS_SHELL_SEEN.clear()
 
 
 @pytest.fixture(autouse=True)

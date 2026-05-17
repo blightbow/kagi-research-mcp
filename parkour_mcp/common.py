@@ -223,7 +223,6 @@ TOOL_NAMES: dict[str, dict[str, str]] = {
     "search": {"code": "KagiSearch", "desktop": "kagi_search"},
     "web_fetch_sections": {"code": "WebFetchSections", "desktop": "web_fetch_sections"},
     "web_fetch_direct": {"code": "WebFetchIncisive", "desktop": "web_fetch_incisive"},
-    "web_fetch_js": {"code": "WebFetchJS", "desktop": "web_fetch_js"},
     "summarize": {"code": "KagiSummarize", "desktop": "kagi_summarize"},
     "semantic_scholar": {"code": "SemanticScholar", "desktop": "semantic_scholar"},
     "arxiv": {"code": "ArXiv", "desktop": "arxiv"},

@@ -1,7 +1,8 @@
 """Shared content-processing pipelines for fetch tools.
 
 Consolidates MediaWiki fast-path logic and post-fetch section/truncation/frontmatter
-assembly that is common to both web_fetch_js and web_fetch_direct.
+assembly common to web_fetch_direct's static path and its headless-browser
+(_render_js) path.
 """
 
 import logging

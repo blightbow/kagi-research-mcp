@@ -77,7 +77,6 @@ GLYPHS: list[Glyph] = [
     Glyph("summarize", 0x03A3, "NotoSansMono-Regular.ttf",     "Σ", "GREEK CAPITAL SIGMA"),
     Glyph("sections",  0x00A7, "NotoSansMono-Regular.ttf",     "§", "SECTION SIGN"),
     Glyph("exact",     0x2316, "NotoSansSymbols2-Regular.ttf", "⌖", "POSITION INDICATOR"),
-    Glyph("js",        0x26A1, "NotoSansSymbols2-Regular.ttf", "⚡", "HIGH VOLTAGE"),
     Glyph("arxiv",     0x03C7, "NotoSansMono-Regular.ttf",     "χ", "GREEK SMALL CHI"),
     Glyph("scholar",   0x2234, "NotoSansMono-Regular.ttf",     "∴", "THEREFORE"),
     Glyph("shelf",     0x229E, "NotoSansMath-Regular.ttf",     "⊞", "SQUARED PLUS"),

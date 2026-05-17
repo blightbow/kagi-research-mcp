@@ -38,7 +38,7 @@ import sys; sys.path.insert(0, "scripts")
 from cog_helpers import tool_count
 cog.outl(f"- **`__init__.py`** — MCP server entry point. Registers {tool_count(with_optional=True)}, with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.")
 ]]] -->
-- **`__init__.py`** — MCP server entry point. Registers 14 always-on tools, plus 1 optional (SemanticScholar, gated by S2_ACCEPT_TOS), with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.
+- **`__init__.py`** — MCP server entry point. Registers 13 always-on tools, plus 1 optional (SemanticScholar, gated by S2_ACCEPT_TOS), with profile-specific names (PascalCase for `code`, snake_case for `desktop`). Description templates have placeholders replaced at registration time.
 <!-- [[[end]]] -->
 - **`_pipeline.py`** — Shared processing layer. Owns the fast-path detection chain, multi-entry caching (`_WikiCache` LRU, `_PageCache` 2Q), slicing, BM25 search, and section filtering.
 - **`markdown.py`** — HTML→markdown conversion via custom `TextOnlyConverter`. Section extraction with fuzzy slug matching. Content fencing. Semantic truncation for markdown, hard truncation for structured formats.
@@ -46,8 +46,8 @@ cog.outl(f"- **`__init__.py`** — MCP server entry point. Registers {tool_count
 
 API integration modules, each self-contained:
 - **`kagi.py`** — Search and summarize via kagiapi. Balance tracking with low-credit lockout.
-- **`fetch_direct.py`** — Static HTTP fetching with content-type detection. Routes URLs through fast-path chain before falling back to HTTP.
-- **`fetch_js.py`** — Playwright browser automation with live app detection (Gradio, Streamlit). ReAct-style interaction chains. Falls back to HTTP if Playwright unavailable.
+- **`fetch_direct.py`** — The `web_fetch_direct` tool (WebFetchIncisive). Static HTTP fetching with content-type detection. Routes URLs through the fast-path chain; falls back to static HTTP, or to the headless-browser renderer when `requires_js=True` / `actions` is set.
+- **`fetch_js.py`** — `_render_js`, the headless-browser render path for `web_fetch_direct`'s `requires_js` mode. Not a registered tool. Playwright automation with live-app detection (Gradio, Streamlit) and ReAct-style `actions` chains; `web_fetch_direct` owns the fast paths and SSRF check before dispatching here.
 - **`arxiv.py`** — arXiv Atom API. Field-prefix query syntax. 3s rate limit.
 - **`semantic_scholar.py`** — S2 API with optimized field sets per query type. 1s rate limit (higher with `S2_API_KEY`).
 - **`doi.py`** — DOI resolution via content negotiation. Registration agency detection. DataCite enrichment (ORCID, affiliations, licenses).

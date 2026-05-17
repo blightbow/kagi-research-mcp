@@ -8,7 +8,6 @@ Skipped by default. Run with:
 import pytest
 
 from parkour_mcp.fetch_direct import web_fetch_direct
-from parkour_mcp.fetch_js import web_fetch_js
 from parkour_mcp.mediawiki import (
     _detect_mediawiki,
     _fetch_mediawiki_page,
@@ -150,13 +149,13 @@ class TestLiveWebFetchDirect:
         assert "404" in result
 
 
-# --- web_fetch_js ---
+# --- requires_js (headless-browser render) ---
 
-class TestLiveWebFetchJs:
+class TestLiveRequiresJs:
     @pytest.mark.asyncio
     async def test_wiki_full_page_via_api(self):
         """MediaWiki fast path should return content without launching browser."""
-        result = await web_fetch_js(WIKI_URL, max_tokens=200)
+        result = await web_fetch_direct(WIKI_URL, requires_js=True, max_tokens=200)
         fm, fence = split_output(result)
 
         assert "site: Ultima Codex" in fm
@@ -170,7 +169,9 @@ class TestLiveWebFetchJs:
 
     @pytest.mark.asyncio
     async def test_wiki_section_fetch_via_api(self):
-        result = await web_fetch_js(WIKI_URL, section="Honor Lost", max_tokens=1000)
+        result = await web_fetch_direct(
+            WIKI_URL, section="Honor Lost", requires_js=True, max_tokens=1000
+        )
         _fm, fence = split_output(result)
         assert_fenced(result)
         assert fenced_heading(4, "Honor Lost") in fence
@@ -180,9 +181,10 @@ class TestLiveWebFetchJs:
 
     @pytest.mark.asyncio
     async def test_wiki_multiple_sections_via_api(self):
-        result = await web_fetch_js(
+        result = await web_fetch_direct(
             WIKI_URL,
             section=["Honor Lost", "The Spell of Divination"],
+            requires_js=True,
             max_tokens=2000,
         )
         _fm, fence = split_output(result)
@@ -192,7 +194,18 @@ class TestLiveWebFetchJs:
 
     @pytest.mark.asyncio
     async def test_non_wiki_uses_browser(self):
-        """Non-wiki URL should fall through to browser path."""
-        result = await web_fetch_js("https://httpbin.org/html", max_tokens=500)
+        """Non-wiki URL should fall through to the browser path."""
+        result = await web_fetch_direct(
+            "https://httpbin.org/html", requires_js=True, max_tokens=500
+        )
         assert "browser:" in result
         assert "generator: MediaWiki" not in result
+
+    @pytest.mark.asyncio
+    async def test_premature_requires_js_emits_tip(self):
+        """Mechanism #3: cold requires_js with no JS-shell evidence fires the tip."""
+        result = await web_fetch_direct(
+            "https://httpbin.org/html", requires_js=True, max_tokens=500
+        )
+        assert "tip:" in result
+        assert "detects JavaScript-shell pages" in result

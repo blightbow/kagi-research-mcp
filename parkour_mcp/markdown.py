@@ -906,6 +906,10 @@ _TIPS: dict[str, str] = {
         "{web_fetch_sections} returns the page's heading layout; use it to "
         "scout before committing to a content fetch"
     ),
+    "incisive_premature_playwright": (
+        "{web_fetch_direct} detects JavaScript-shell pages on its own; set "
+        "requires_js after a plain fetch comes back empty, not preemptively"
+    ),
 }
 
 _FIRED_TIPS: set[str] = set()

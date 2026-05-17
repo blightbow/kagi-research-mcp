@@ -1,4 +1,21 @@
-docs/frontmatter-standard.md -> parkour_mcp/markdown.py#FMEntries sig:2f286b37bff65ade
-docs/frontmatter-standard.md -> parkour_mcp/markdown.py#_append_frontmatter_entry sig:7076cdace4b288b3
-docs/frontmatter-standard.md -> parkour_mcp/markdown.py#_build_frontmatter sig:6c54ea5f293ef454
-docs/frontmatter-standard.md -> parkour_mcp/markdown.py#_fence_content sig:2c6bdff56a35adef
+version = 1
+
+[[bindings]]
+doc = "docs/frontmatter-standard.md"
+target = "parkour_mcp/markdown.py#FMEntries"
+sig = "d5a954afd3e36c90"
+
+[[bindings]]
+doc = "docs/frontmatter-standard.md"
+target = "parkour_mcp/markdown.py#_append_frontmatter_entry"
+sig = "7076cdace4b288b3"
+
+[[bindings]]
+doc = "docs/frontmatter-standard.md"
+target = "parkour_mcp/markdown.py#_build_frontmatter"
+sig = "8e40266239da37f5"
+
+[[bindings]]
+doc = "docs/frontmatter-standard.md"
+target = "parkour_mcp/markdown.py#_fence_content"
+sig = "2c6bdff56a35adef"

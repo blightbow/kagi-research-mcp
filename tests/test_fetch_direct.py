@@ -1389,3 +1389,43 @@ class TestWebFetchDirectCanaryTip:
         markdown._FIRED_TIPS.clear()
         again = await web_fetch_direct("https://example.com/page")
         assert "tip:" not in split_output(again)[0]
+
+
+class TestWebFetchDirectJsDetection:
+    """Mechanism #1: an empty JavaScript shell steers the agent to requires_js."""
+
+    _JS_SHELL_HTML = (
+        "<html><head><title>App</title></head><body>"
+        '<div id="root"></div>'
+        "<noscript>This application requires JavaScript to run.</noscript>"
+        "</body></html>"
+    )
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_js_shell_emits_requires_js_hint(self):
+        respx.get("https://spa.example.com/").mock(
+            return_value=httpx.Response(
+                200, text=self._JS_SHELL_HTML,
+                headers={"content-type": "text/html"},
+            )
+        )
+        result = await web_fetch_direct("https://spa.example.com/")
+        assert "hint:" in result
+        assert "requires JavaScript" in result
+        assert "requires_js=true" in result
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_js_shell_records_url_for_premature_oracle(self):
+        from parkour_mcp import fetch_direct
+        respx.get("https://spa.example.com/").mock(
+            return_value=httpx.Response(
+                200, text=self._JS_SHELL_HTML,
+                headers={"content-type": "text/html"},
+            )
+        )
+        await web_fetch_direct("https://spa.example.com/")
+        # The URL is recorded so a follow-up requires_js retry is not flagged
+        # premature (the agent would be acting on the hint, not reaching blind).
+        assert "https://spa.example.com/" in fetch_direct._JS_SHELL_SEEN

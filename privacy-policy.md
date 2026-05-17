@@ -20,7 +20,7 @@ third-party APIs over HTTPS:
 | **Reddit** (old.reddit.com) | Thread URLs | WebFetchIncisive (fast path) |
 | **Discourse** (forum hosts) | Topic URLs, search queries | Discourse tool, WebFetchIncisive (header-detected fast path) |
 | **CrossRef** (api.crossref.org) | DOIs | DOI resolution, retraction detection |
-| **Arbitrary web URLs** | The URL you provide | WebFetchIncisive, WebFetchJS, WebFetchSections |
+| **Arbitrary web URLs** | The URL you provide | WebFetchIncisive, WebFetchSections |
 
 Each service's own privacy policy governs how they handle your requests.
 

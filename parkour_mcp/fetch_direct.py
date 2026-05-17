@@ -38,6 +38,12 @@ logger = logging.getLogger(__name__)
 # GitHub line anchor fragments: #L45 or #L45-L100
 _LINE_ANCHOR_RE = re.compile(r"^L(\d+)(?:-L(\d+))?$")
 
+# URLs that returned an empty JavaScript-shell result this session.  A later
+# requires_js call on such a URL is the agent correctly acting on the
+# JS-detection hint, so the premature-requires_js tip is suppressed for it.
+# Process-lifetime, like the tip ledger; tests reset it per-test.
+_JS_SHELL_SEEN: set[str] = set()
+
 
 async def web_fetch_direct(
     url: str,
@@ -45,12 +51,20 @@ async def web_fetch_direct(
     section: Optional[Union[str, list[str]]] = None,
     search: Optional[str] = None,
     slices: Optional[Union[int, list[int]]] = None,
+    requires_js: bool = False,
+    actions: Optional[list] = None,
+    max_elements: int = 25,
 ) -> str:
-    """Fetch raw content from a URL without JavaScript rendering.
+    """Fetch content from a URL, by static HTTP or a headless browser.
 
     Returns markdown with YAML frontmatter. Supports HTML, plain text, JSON,
     and XML content types. For HTML pages, use the section parameter to extract
     specific sections by heading name.
+
+    JavaScript-dependent pages: pass ``requires_js=True`` to render through a
+    headless browser instead of static HTTP. Supply ``actions`` to run a ReAct
+    interaction chain (click/fill/select/wait) before extraction; ``actions``
+    implies ``requires_js``.
 
     For MediaWiki pages (Wikipedia, etc.), footnote and inline-citation
     lookup live on the dedicated ``MediaWiki`` tool's ``references``
@@ -67,6 +81,13 @@ async def web_fetch_direct(
         section: Section name or list of section names to extract from the page
         search: Search terms for BM25 keyword matching within cached page content
         slices: Slice index or list of indices to retrieve from cached page content
+        requires_js: Render via a headless browser, for pages whose content is
+            built by client-side JavaScript
+        actions: ReAct interaction chain run before extraction; each item is
+            {"action": "click"|"fill"|"select"|"wait", "selector": "...",
+            "value": "..."}. Implies requires_js
+        max_elements: Cap on the interactive-element appendix in browser
+            renders; 0 omits it (default 25)
     """
     # Extract fragment from URL (e.g. #section-name) as implicit section request
     url, fragment = _extract_fragment(url)
@@ -110,12 +131,19 @@ async def web_fetch_direct(
         return "Error: 'search'/'slices' and 'section' are mutually exclusive."
 
     # --- Search/slices cache-first path ---
-    # Only reuse "direct" or "wiki" entries.  A "js" entry was produced by
-    # Playwright and should not be served from a tool that does static HTTP.
+    # A static fetch must not reuse a "js" entry (browser-rendered, may carry
+    # JS-built content a static caller didn't ask for) and a requires_js fetch
+    # must not reuse a "direct" entry (static HTML, may be sparse for a JS
+    # page).  "wiki"/"github" are API-sourced and identical either way.
+    js_mode = requires_js or bool(actions)
     if want_slicing:
         fm_base = FMEntries({"source": source_url, "warning": fragment_warning})
         cached = _page_cache.get(url)
-        if cached and cached.renderer in ("direct", "wiki", "reddit", "discourse", "github"):
+        eligible = (
+            ("js", "wiki", "github") if js_mode
+            else ("direct", "wiki", "reddit", "discourse", "github")
+        )
+        if cached and cached.renderer in eligible:
             fm_base["title"] = cached.title or "Untitled"
             if search is not None:
                 return _search_slices(url, search, max_tokens, fm_base) or \
@@ -290,6 +318,27 @@ async def web_fetch_direct(
     except Exception:
         pass  # Fall through to HTTP fetch
 
+    # --- requires_js / actions: hand off to the headless-browser renderer ---
+    # Runs only after the API-backed fast paths miss — they are renderer-
+    # agnostic, so an arXiv or GitHub URL is served from its API even in JS
+    # mode rather than being needlessly rendered through a browser.
+    if js_mode:
+        # Premature: bare requires_js on a cold URL the agent never tried a
+        # plain fetch on (and which never returned a JS-shell hint).  An
+        # actions chain is never premature — it needs a browser by definition.
+        premature = (
+            requires_js and not actions
+            and url not in _page_cache
+            and url not in _JS_SHELL_SEEN
+        )
+        from .fetch_js import _render_js
+        return await _render_js(
+            url, source_url, fragment_warning, section_names,
+            want_slicing, search, slices, slices_list,
+            max_tokens=max_tokens, actions=actions, max_elements=max_elements,
+            premature=premature,
+        )
+
     # --- HTTP fetch ---
     # Targeted calls (section=/search=/slices=) bound their output to the
     # requested slice regardless of body size, so they get the relaxed cap
@@ -389,10 +438,11 @@ async def web_fetch_direct(
 
     if not markdown_content:
         if _detect_js_dependent(response.text):
+            _JS_SHELL_SEEN.add(url)
             fm = _build_frontmatter({
                 "source": source_url,
                 "warning": fragment_warning,
-                "see_also": f"{tool_name('web_fetch_js')} — this page requires JavaScript to render content",
+                "hint": "this page requires JavaScript to render content; retry with requires_js=true",
             })
             return fm
         return f"Error: No content extracted from {url}"
@@ -863,9 +913,10 @@ async def web_fetch_sections(url: str, slice: int = 0) -> str:
 
     if not markdown_content:
         if _detect_js_dependent(response.text):
+            _JS_SHELL_SEEN.add(original_url)
             fm = _build_frontmatter({
                 "source": original_url,
-                "see_also": f"{tool_name('web_fetch_js')} — this page requires JavaScript to render content",
+                "hint": "this page requires JavaScript to render content; retry with requires_js=true",
             })
             return fm
         return f"Error: No content extracted from {url}"

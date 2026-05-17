@@ -1,4 +1,11 @@
-"""JavaScript-rendered web content fetching via Playwright."""
+"""Headless-browser rendering for the WebFetchIncisive ``requires_js`` path.
+
+``_render_js`` is the generic browser-render fallback invoked by
+``web_fetch_direct`` when the caller sets ``requires_js`` or supplies an
+``actions`` chain.  It is not a registered tool: the caller owns fragment
+resolution, the SSRF check, parameter validation, and the API-backed fast
+paths, so this module handles only what genuinely needs a browser.
+"""
 
 import logging
 import os
@@ -9,18 +16,20 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
-from .common import _FETCH_HEADERS, check_url_ssrf
+from .common import _FETCH_HEADERS
 from .markdown import (
     FMEntries,
     html_to_markdown, _build_frontmatter, _apply_hard_truncation,
     _fence_content, _TRUST_ADVISORY,
 )
 from ._pipeline import (
-    _extract_fragment, _normalize_sections, _resolve_fragment_source,
-    _mediawiki_fast_path, _arxiv_fast_path, _s2_fast_path, _doi_fast_path, _discourse_fast_path, _github_fast_path,
-    _process_markdown_sections,
-    _page_cache, _dispatch_slicing,
+    _discourse_fast_path, _process_markdown_sections, _dispatch_slicing,
 )
+
+# Per-operation budget for navigation, actions, and selector waits.  Not
+# caller-tunable: an agent has no basis to pick a millisecond value, and a
+# page that needs more than this is pathological.
+_PLAYWRIGHT_TIMEOUT_MS = 30000
 
 logger = logging.getLogger(__name__)
 
@@ -230,145 +239,39 @@ async def _extract_interactive_elements(page, max_elements: int = 25) -> tuple[l
     return elements[:max_elements], len(elements)
 
 
-async def web_fetch_js(
+async def _render_js(
     url: str,
-    actions: Optional[list] = None,
-    wait_for: Optional[str] = None,
-    timeout: int = 30000,
-    include_interactive: bool = True,
-    max_elements: int = 25,
-    max_tokens: int = 5000,
-    section: Optional[Union[str, list[str]]] = None,
-    search: Optional[str] = None,
-    slices: Optional[Union[int, list[int]]] = None,
+    source_url: str,
+    fragment_warning: Optional[str],
+    section_names: Optional[list[str]],
+    want_slicing: bool,
+    search: Optional[str],
+    slices: Optional[Union[int, list[int]]],
+    slices_list: list[int],
+    *,
+    max_tokens: int,
+    actions: Optional[list],
+    max_elements: int,
+    premature: bool = False,
 ) -> str:
-    """Fetch web content with full JavaScript rendering and optional interactions.
+    """Render a page through a headless browser, after the caller's fast paths.
 
-    For MediaWiki pages (Wikipedia, etc.), footnote and inline-citation
-    lookup live on the dedicated ``MediaWiki`` tool's ``references``
-    action; the fast path here surfaces a ``see_also`` hint pointing
-    at it when a page has either reference type.
+    Invoked by ``web_fetch_direct`` when ``requires_js`` is set or an
+    ``actions`` chain is supplied.  The caller has already resolved the URL
+    fragment, run the SSRF check, validated parameters, and exhausted the
+    API-backed fast paths, so this handles only the generic browser-render
+    fallback: a content-type precheck (non-HTML is returned raw, no
+    browser), the headless render with optional ReAct ``actions``, and the
+    shared section/slice pipeline.
 
-    Args:
-        url: The URL to fetch
-        actions: List of interaction actions to perform before extraction.
-                 Each action: {"action": "click"|"fill"|"select"|"wait",
-                              "selector": "CSS selector", "value": "optional value"}
-        wait_for: CSS selector to wait for before extracting content
-        timeout: Max wait time in milliseconds (default 30000)
-        include_interactive: If True, annotate interactive elements in output (default True)
-        max_elements: Maximum number of interactive elements to extract (default 25)
-        max_tokens: Limit on output length in approximate token count (default 5000)
-        section: Section name or list of section names to extract from the page
-        search: Search terms for BM25 keyword matching within cached page content
-        slices: Slice index or list of indices to retrieve from cached page content
+    ``max_elements`` caps the interactive-element appendix; ``0`` omits it.
+    ``premature`` is set by the caller when the agent reached for a render
+    without evidence the page needs one; it emits a one-time teaching tip.
     """
-    # Extract fragment from URL (e.g. #section-name) as implicit section request
-    url, fragment = _extract_fragment(url)
-    section_names = _normalize_sections(section)
-    if fragment and not section_names:
-        section_names = [fragment]
-    source_url, fragment_warning = _resolve_fragment_source(url, fragment, section)
-
-    # --- SSRF check (must run before any fast path that makes HTTP requests) ---
-    ssrf_error = check_url_ssrf(url)
-    if ssrf_error:
-        return ssrf_error
-
-    # --- Parameter validation ---
-    if search is not None and search == "":
-        search = None
-    slices_list: list[int] = []
-    if slices is not None:
-        slices_list = [slices] if isinstance(slices, int) else list(slices)
-        if not slices_list:
-            slices = None
-    want_slicing = search is not None or slices is not None
-
-    if search is not None and slices is not None:
-        return "Error: 'search' and 'slices' are mutually exclusive."
-    if want_slicing and section_names:
-        return "Error: 'search'/'slices' and 'section' are mutually exclusive."
-
-    # --- Search/slices cache-first path ---
-    # Skip cache entries produced by WebFetchIncisive ("direct") — its static
-    # HTML may be sparse for JS-heavy pages.  Entries from "js" (Playwright)
-    # or "wiki" (MediaWiki API, identical regardless of calling tool) are safe.
-    if want_slicing:
-        cached = _page_cache.get(url)
-        if cached and cached.renderer in ("js", "wiki", "github"):
-            return _dispatch_slicing(
-                url, search, slices, slices_list if slices is not None else [],
-                max_tokens, source_url, warning=fragment_warning,
-            )
-
-    # --- arXiv fast path (before launching browser) ---
-    try:
-        result = await _arxiv_fast_path(url)
-        if result is not None:
-            return result
-    except Exception:
-        pass
-
-    # --- Semantic Scholar fast path (gated on S2 opt-in) ---
-    try:
-        from .common import s2_enabled
-        if s2_enabled():
-            result = await _s2_fast_path(url)
-            if result is not None:
-                return result
-    except Exception:
-        pass
-
-    # --- DOI fast path (after arXiv/S2, before MediaWiki) ---
-    try:
-        from .doi import _detect_doi_url
-        if _detect_doi_url(url):
-            if want_slicing:
-                return "Error: search/slices not supported for DOI resolver URLs."
-            result = await _doi_fast_path(url)
-            if result is not None:
-                return result
-    except Exception:
-        pass
-
-    # --- GitHub fast path (after DOI, before MediaWiki) ---
-    try:
-        from .github import _detect_github_url
-        if _detect_github_url(url):
-            result = await _github_fast_path(url, max_tokens)
-            if result is not None:
-                if want_slicing:
-                    return _dispatch_slicing(
-                        url, search, slices,
-                        slices_list if slices is not None else [],
-                        max_tokens, source_url, warning=fragment_warning,
-                        fallback=result,
-                    )
-                return result
-    except Exception:
-        pass
-
-    # --- MediaWiki fast path (before launching browser) ---
-    try:
-        result = await _mediawiki_fast_path(
-            url, section_names, max_tokens,
-            extra_entries=FMEntries({"source": source_url, "warning": fragment_warning}),
-            cache_url=url,
-        )
-        if result is not None:
-            if want_slicing:
-                return _dispatch_slicing(
-                    url, search, slices, slices_list if slices is not None else [],
-                    max_tokens, source_url, warning=fragment_warning,
-                    fallback=result,
-                )
-            return result
-    except Exception:
-        pass  # Fall through to browser path
+    timeout = _PLAYWRIGHT_TIMEOUT_MS
 
     # --- Content-type pre-check (skip browser for non-HTML) ---
-    if not actions and not wait_for:
+    if not actions:
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
                 head_resp = await client.head(url, headers=_FETCH_HEADERS)
@@ -510,10 +413,6 @@ async def web_fetch_js(
                     except Exception:
                         pass  # Proceed anyway
 
-            # Optional: wait for specific element
-            if wait_for:
-                await page.wait_for_selector(wait_for, timeout=timeout)
-
             # Extract title
             title = await page.title() or "Untitled"
 
@@ -554,10 +453,10 @@ async def web_fetch_js(
                         # Cross-origin or other access issue - try next frame
                         continue
 
-            # Extract interactive elements for ReAct chaining
+            # Extract interactive elements for ReAct chaining (max_elements=0 omits)
             interactive_elements: list[dict] = []
             elements_total = 0
-            if include_interactive:
+            if max_elements > 0:
                 interactive_elements, elements_total = await _extract_interactive_elements(
                     page, max_elements
                 )
@@ -581,6 +480,8 @@ async def web_fetch_js(
         "detected_app": detected_app or None,
         "iframe_source": iframe_source or None,
     })
+    if premature:
+        frontmatter_entries.set_tip("incisive_premature_playwright")
     output = _process_markdown_sections(
         markdown_content, section_names, max_tokens, frontmatter_entries,
         title=title, cache_url=url, renderer="js",

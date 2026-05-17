@@ -22,12 +22,7 @@ description = "List section headings and anchor slugs for a web page (for target
 [[tool]]
 name = "web_fetch_incisive"
 pascal = "WebFetchIncisive"
-description = "Fetch a Markdown rendered version of a HTML webpage (also returns raw content for common content types: JSON, XML, plain text)"
-
-[[tool]]
-name = "web_fetch_js"
-pascal = "WebFetchJS"
-description = "Use Playwright to render a headless version of the website in Markdown (extracting documents from a JavaScript cage)"
+description = "Fetch a Markdown rendered version of a HTML webpage (also returns raw content for common content types: JSON, XML, plain text). `requires_js=true` renders JavaScript-dependent pages through a headless browser, with an `actions` ReAct chain for interaction"
 
 [[tool]]
 name = "semantic_scholar"

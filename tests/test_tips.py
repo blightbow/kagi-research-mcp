@@ -136,3 +136,11 @@ def test_canary_tip_is_registered_and_resolves():
     fm.set_tip("webfetchsections_scout")
     out = _build_frontmatter(fm)
     assert "tip: WebFetchSections returns the page's heading layout;" in out
+
+
+def test_premature_playwright_tip_is_registered_and_resolves():
+    # The shipped incisive_premature_playwright entry resolves cleanly.
+    fm = FMEntries({})
+    fm.set_tip("incisive_premature_playwright")
+    out = _build_frontmatter(fm)
+    assert "tip: WebFetchIncisive detects JavaScript-shell pages" in out

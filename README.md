@@ -311,8 +311,8 @@ The `--profile` argument adjusts tool names and descriptions for the target clie
 
 | Profile | Target | Tool Names |
 |---------|--------|------------|
-| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_js`, `web_fetch_incisive`, `web_fetch_sections`, `semantic_scholar`, `arxiv`, `github`, `ietf`, `packages`, `discourse`, `mediawiki` |
-| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchJS`, `WebFetchIncisive`, `WebFetchSections`, `SemanticScholar`, `ArXiv`, `GitHub`, `IETF`, `Packages`, `Discourse`, `MediaWiki` |
+| `desktop` (default) | Claude Desktop | `kagi_search`, `kagi_summarize`, `web_fetch_incisive`, `web_fetch_sections`, `semantic_scholar`, `arxiv`, `github`, `ietf`, `packages`, `discourse`, `mediawiki` |
+| `code` | Claude Code | `KagiSearch`, `KagiSummarize`, `WebFetchIncisive`, `WebFetchSections`, `SemanticScholar`, `ArXiv`, `GitHub`, `IETF`, `Packages`, `Discourse`, `MediaWiki` |
 
 The `desktop` profile (snake_case) is the default as it aligns with MCP ecosystem conventions. Claude Code's PascalCase naming is the exception, not the norm.
 
@@ -329,8 +329,7 @@ cog.outl(render_tool_table())
 |--------------------|-------------------------|-------------|
 | kagi_search        | KagiSearch              | Search the web using Kagi.com's curated, SEO-resistant index |
 | web_fetch_sections | WebFetchSections        | List section headings and anchor slugs for a web page (for targeted extraction). Long documents paginate via `slice=` in 100-section windows |
-| web_fetch_incisive | WebFetchIncisive        | Fetch a Markdown rendered version of a HTML webpage (also returns raw content for common content types: JSON, XML, plain text) |
-| web_fetch_js       | WebFetchJS              | Use Playwright to render a headless version of the website in Markdown (extracting documents from a JavaScript cage) |
+| web_fetch_incisive | WebFetchIncisive        | Fetch a Markdown rendered version of a HTML webpage (also returns raw content for common content types: JSON, XML, plain text). `requires_js=true` renders JavaScript-dependent pages through a headless browser, with an `actions` ReAct chain for interaction |
 | semantic_scholar   | SemanticScholar         | Search and retrieve academic paper data from Semantic Scholar (search, paper details, references, authors, body text snippets) |
 | arxiv              | ArXiv                   | Search and retrieve academic papers from arXiv (search with field-prefix syntax, paper details, category browsing) |
 | github             | GitHub                  | Search and retrieve code, issues, pull requests, commits, and comparisons from GitHub (9 actions: search_issues, search_code, search_repos, repo, tree, issue, pull_request, file, issue_templates) |
@@ -421,9 +420,9 @@ echo "your-api-key" > ~/.config/parkour/s2_api_key
 
 Get your free API key at https://www.semanticscholar.org/product/api#api-key-form
 
-### Browser Engine (for web_fetch_js)
+### Browser Engine (for `requires_js` rendering)
 
-The `web_fetch_js` tool requires a Playwright browser engine. Install one or more:
+WebFetchIncisive's `requires_js` mode requires a Playwright browser engine. Install one or more:
 
 ```bash
 # WebKit (lightweight, preferred when available)
