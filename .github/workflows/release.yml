@@ -17,6 +17,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # git-cliff walks the full commit history and tag graph to
+          # assemble release notes; checkout's default depth-1 shallow
+          # fetch starves it. 0 = full history plus all tags.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -75,12 +80,21 @@ jobs:
         # git-cliff is the single source of truth for changelog content
         # (both local CHANGELOG.md assembly during /release and this CI
         # step). It reads the [tool.git-cliff] config in pyproject.toml,
-        # walks commits in the current tag's range, extracts `Why:`
-        # trailers via the Tera template, and emits the same Keep a
-        # Changelog section that was prepended to CHANGELOG.md locally.
-        # --strip all removes the # Changelog header / footer so the
-        # output is ready to feed to `gh release create --notes-file`.
-        run: git cliff --current --strip all -o release-notes.md
+        # extracts `Why:` trailers via the Tera template, and emits a
+        # Keep a Changelog section. --strip all removes the header /
+        # footer so the output feeds `gh release create --notes-file`.
+        #
+        # The range is anchored to the last FINAL tag, not --current /
+        # --latest: those cut at the adjacent git tag, so a release
+        # published after intervening rcN pre-release tags would report
+        # only the rc-period commits. Selecting the most recent vX.Y.Z
+        # ancestor makes both an RC and the final it precedes report the
+        # whole body of work since the previous final release.
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          last_final=$(git tag --list 'v*' --merged "$tag" --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vFx "$tag" | head -1)
+          git cliff "${last_final}..${tag}" --strip all -o release-notes.md
 
       - name: Create GitHub Release
         env:

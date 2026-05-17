@@ -153,14 +153,14 @@ Write `Why:` as a single logical line (wrap in your editor, but no hard newlines
 
 `pyproject.toml:project.version` is the single source of truth (PEP 440). `scripts/sync_versions.py` mirrors it to:
 
-- `manifest.json:version` translated to strict SemVer 2.0 (Claude Desktop rejects PEP 440 pre-release forms). `1.2.0rc1` becomes `1.2.0-rc.1`.
+- `manifest.json:version` translated to strict SemVer 2.0 (Claude Desktop rejects PEP 440 pre-release forms). `2.0.0rc0` becomes `2.0.0-rc.0`.
 - `server.json:version` verbatim (MCP Registry accepts PEP 440).
 
 **Do not hand-edit manifest.json or server.json version fields.** The sync script is the single writer. `just tag` runs `sync_versions.py --check` as a pre-push gate and the CI workflow re-runs it before doing anything else.
 
 ### Pre-releases
 
-Public RCs are supported end-to-end. commitizen's `version_scheme = "pep440"` emits forms like `1.2.0rc1` that `uv build` and PyPI accept, and `sync_versions.py` translates those to strict SemVer (`1.2.0-rc.1`) in `manifest.json` for Claude Desktop. To cut an RC, the `/release` slash command accepts an explicit opt-in and passes `--prerelease rc` to `cz bump`.
+Public RCs are supported end-to-end. commitizen's `version_scheme = "pep440"` emits a zero-based RC counter, so the first RC of `2.0.0` is `2.0.0rc0` — a form `uv build` and PyPI accept, and `sync_versions.py` translates it to strict SemVer (`2.0.0-rc.0`) in `manifest.json` for Claude Desktop. To cut an RC, the `/release` slash command accepts an explicit opt-in and passes `--prerelease rc` to `cz bump`. CHANGELOG.md tracks final releases only: an RC gets no section of its own, and git-cliff folds an RC's commits into the next final. Both the local CHANGELOG prepend and the CI release-note step anchor their commit range to the last final `vX.Y.Z` tag, so a final cut after one or more intervening RC tags still spans the whole range since the previous final.
 
 ## Conventions
 

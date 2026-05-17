@@ -29,23 +29,35 @@ Show the user what will land:
 
 ```
 uv run cz bump --dry-run --yes
-git cliff --tag v<NEXT> --unreleased
+LAST_FINAL=$(git tag --list 'v*' --merged HEAD --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+git cliff --tag v<NEXT> "$LAST_FINAL..HEAD"
 ```
 
 where `<NEXT>` is the version from step 1. Together these preview the
 version bump and the assembled CHANGELOG entry without writing
-anything. Pause; let the user approve or ask for commit-message edits
-(via `git commit --amend` or `git rebase -i`) before you stage.
+anything. The range starts at `$LAST_FINAL`, the most recent final
+`vX.Y.Z` tag, rather than `--unreleased`: when a release is cut after
+intervening RC tags, `--unreleased` would span only the post-RC
+commits, so the final's entry would omit the bulk of the work. Pause;
+let the user approve or ask for commit-message edits (via
+`git commit --amend` or `git rebase -i`) before you stage.
 
 If the user wants a public RC (finals-only is the default), they can
-ask for it explicitly. The RC equivalent of step 3 is:
+ask for it explicitly. For an RC, step 3's `cz bump` becomes:
 
 ```
 uv run cz bump --version-files-only --yes --prerelease rc
 ```
 
-commitizen's `pep440` version scheme emits `1.2.0rc1` (not the SemVer
-dashed form that would break `uv build`).
+commitizen's `pep440` scheme emits a zero-based counter — the first RC
+of `2.0.0` is `2.0.0rc0` (PEP 440, which `uv build` and PyPI accept;
+`sync_versions.py` translates it to `2.0.0-rc.0` for manifest.json). Do
+NOT pass `--prerelease-offset`: it shifts only the first RC and is
+silently ignored on every later bump, leaving a misleading no-op in
+config. An RC also does NOT prepend to CHANGELOG.md — that file tracks
+final releases only, and git-cliff folds an RC's commits into the next
+final section. For an RC, skip the `git cliff ... --prepend` line in
+step 3; the RC's GitHub Release notes are assembled by CI.
 
 ## Step 3: Stage the bump
 
@@ -62,13 +74,18 @@ commit:
 
 ```
 NEXT=$(uv run python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-git cliff --tag "v$NEXT" --unreleased --prepend CHANGELOG.md
+LAST_FINAL=$(git tag --list 'v*' --merged HEAD --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+git cliff --tag "v$NEXT" "$LAST_FINAL..HEAD" --prepend CHANGELOG.md   # finals only — skip this line for an RC
 uv run python3 scripts/sync_versions.py
 ```
 
-- `git cliff --tag --unreleased --prepend` parses Conventional Commits
-  from git log, extracts `Why:` trailers as user-facing narrative, and
-  prepends an assembled `## [$NEXT] <date>` section to `CHANGELOG.md`.
+- `git cliff --tag "v$NEXT" "$LAST_FINAL..HEAD" --prepend` parses
+  Conventional Commits from that range, extracts `Why:` trailers as
+  user-facing narrative, and prepends an assembled `## [$NEXT] <date>`
+  section to `CHANGELOG.md`. The range is anchored to the last final
+  `vX.Y.Z` tag (not `--unreleased`) so a final cut after RC tags still
+  spans the whole body of work. **For an RC, skip this line entirely** —
+  CHANGELOG.md tracks final releases only.
 - `sync_versions.py` mirrors the new `project.version` into
   `manifest.json` (translated to strict SemVer for Claude Desktop) and
   `server.json` (PEP 440 verbatim for MCP Registry).
