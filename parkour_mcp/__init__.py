@@ -292,10 +292,11 @@ Supports HTML, plain text, JSON, and XML content types.""",
     "summarize": """Summarize content from a URL using Kagi's Universal Summarizer.
 
 Position relative to the two fetch tools:
-- {web_fetch} summarizes through Anthropic's layer (fast, default;
-  subject to agent blacklisting and IP bans)
+- {web_fetch} returns host-summarized content (fast, default; subject
+  to bot detection and datacenter IP bans)
 - {fetch_direct} returns raw unsummarized content (local fetch through
-  the user's device; bypasses agent/IP bans that block {web_fetch})
+  the user's device; bypasses the bot detection and IP bans that
+  block {web_fetch})
 - this tool summarizes through Kagi's layer — returns a condensed
   digest only, never raw content
 

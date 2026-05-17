@@ -121,3 +121,16 @@ def test_profile_vars_cover_all_profiles():
             f"profile {profile!r} placeholder keys differ from 'code': "
             f"missing={reference - keys}, extra={keys - reference}"
         )
+
+
+def test_hermes_profile_descriptions_drop_anthropic_framing():
+    """The hermes profile targets non-Claude hosts. Its descriptions must not
+    claim parkour's sibling tools route through Anthropic's infrastructure —
+    that prose is true only for Claude Code / Claude Desktop.
+    """
+    for internal_name in _INTERNAL_NAMES:
+        desc = _build_description(internal_name, "hermes")
+        assert "Anthropic" not in desc, (
+            f"hermes-profile description for {internal_name!r} still "
+            f"references Anthropic"
+        )
